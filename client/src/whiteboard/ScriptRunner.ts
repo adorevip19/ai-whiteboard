@@ -12,6 +12,9 @@ export interface RunnerCallbacks {
   onCanvasChange: (canvas: CanvasConfig) => void;
   onElementsChange: (elements: RenderedElement[]) => void;
   onStepChange: (currentIndex: number, total: number) => void;
+  // Push the full narration string for the upcoming command. The UI is
+  // responsible for animating its appearance (typewriter). null clears it.
+  onNarrationChange: (narration: string | null) => void;
   onComplete: () => void;
   onError: (message: string) => void;
 }
@@ -43,11 +46,20 @@ export class ScriptRunner {
       this.cb.onCanvasChange(this.script.canvas);
       this.cb.onElementsChange([]);
 
+      this.cb.onNarrationChange(null);
       const total = this.script.commands.length;
       for (let i = 0; i < total; i++) {
         if (this.cancelled) return;
         this.cb.onStepChange(i, total);
-        await this.runCommand(this.script.commands[i]);
+        // Surface narration BEFORE drawing so the subtitle leads the strokes.
+        const cmd = this.script.commands[i];
+        const narration =
+          cmd.type === "write_text" || cmd.type === "draw_line"
+            ? (cmd.narration ?? null)
+            : null;
+        // Always push (even null) so the bar updates between steps.
+        this.cb.onNarrationChange(narration);
+        await this.runCommand(cmd);
       }
       if (this.cancelled) return;
       this.cb.onStepChange(total, total);

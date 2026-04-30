@@ -17,6 +17,7 @@ export interface WriteTextCommand {
   fontSize: number;
   color?: string;
   duration: number;
+  narration?: string;
 }
 
 export interface DrawLineCommand {
@@ -27,6 +28,7 @@ export interface DrawLineCommand {
   color?: string;
   width?: number;
   duration: number;
+  narration?: string;
 }
 
 export type WhiteboardCommand =
@@ -155,6 +157,7 @@ function validateCommand(
         fontSize: o.fontSize,
         color: typeof o.color === "string" ? o.color : "#111111",
         duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
       },
     };
   }
@@ -194,6 +197,7 @@ function validateCommand(
         color: typeof o.color === "string" ? o.color : "#111111",
         width: typeof o.width === "number" ? o.width : 2,
         duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
       },
     };
   }

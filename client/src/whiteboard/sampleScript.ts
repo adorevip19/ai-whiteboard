@@ -1,4 +1,4 @@
-// Built-in sample script demonstrating write_text and draw_line.
+// Built-in sample script demonstrating write_text, draw_line, and narration.
 import type { WhiteboardScript } from "./commandTypes";
 
 export const sampleScript: WhiteboardScript = {
@@ -17,6 +17,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 44,
       color: "#111111",
       duration: 1200,
+      narration: "同学们好，今天我们用这块白板来讲解一个经典的几何定理。",
     },
     {
       type: "draw_line",
@@ -26,6 +27,7 @@ export const sampleScript: WhiteboardScript = {
       color: "#2563eb",
       width: 4,
       duration: 800,
+      narration: "我先在标题下面画一条蓝色的下划线，作为强调。",
     },
     {
       type: "write_text",
@@ -36,6 +38,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 24,
       color: "#333333",
       duration: 1600,
+      narration: "整块白板的内容,都是由一段 JSON 命令脚本控制的。",
     },
     {
       type: "write_text",
@@ -46,6 +49,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 32,
       color: "#111111",
       duration: 900,
+      narration: "下面我们进入今天的主题:勾股定理。",
     },
     {
       type: "draw_line",
@@ -55,6 +59,7 @@ export const sampleScript: WhiteboardScript = {
       color: "#111111",
       width: 3,
       duration: 900,
+      narration: "首先,我画一条水平线,作为直角三角形的底边。",
     },
     {
       type: "draw_line",
@@ -64,6 +69,7 @@ export const sampleScript: WhiteboardScript = {
       color: "#111111",
       width: 3,
       duration: 900,
+      narration: "再向上画一条垂直线,这两条边形成一个直角。",
     },
     {
       type: "draw_line",
@@ -73,6 +79,7 @@ export const sampleScript: WhiteboardScript = {
       color: "#111111",
       width: 3,
       duration: 1100,
+      narration: "最后连接两端,得到斜边,这就是一个直角三角形。",
     },
     {
       type: "write_text",
@@ -83,6 +90,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 26,
       color: "#2563eb",
       duration: 400,
+      narration: "我们把底边记作 a。",
     },
     {
       type: "write_text",
@@ -93,6 +101,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 26,
       color: "#2563eb",
       duration: 400,
+      narration: "右边的直角边记作 b。",
     },
     {
       type: "write_text",
@@ -103,6 +112,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 26,
       color: "#2563eb",
       duration: 400,
+      narration: "斜边则记作 c。",
     },
     {
       type: "write_text",
@@ -113,6 +123,7 @@ export const sampleScript: WhiteboardScript = {
       fontSize: 36,
       color: "#111111",
       duration: 1400,
+      narration: "勾股定理告诉我们:两条直角边的平方之和,等于斜边的平方。",
     },
   ],
 };

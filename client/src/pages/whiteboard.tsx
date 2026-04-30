@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Play, Square, Trash2, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
 import { WhiteboardCanvas } from "@/whiteboard/WhiteboardCanvas";
+import { NarrationBar } from "@/whiteboard/NarrationBar";
 import { ScriptRunner } from "@/whiteboard/ScriptRunner";
 import {
   validateScript,
@@ -27,6 +28,7 @@ export default function WhiteboardPage() {
   const [status, setStatus] = useState<RunStatus>("idle");
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [activeCommands, setActiveCommands] = useState<WhiteboardCommand[]>([]);
+  const [narration, setNarration] = useState<string | null>(null);
 
   const runnerRef = useRef<ScriptRunner | null>(null);
 
@@ -63,6 +65,7 @@ export default function WhiteboardPage() {
     setActiveCommands(result.script.commands);
     setCanvas(result.script.canvas);
     setElements([]);
+    setNarration(null);
     setStepIndex(0);
     setStepTotal(result.script.commands.length);
     setStatus("running");
@@ -74,6 +77,7 @@ export default function WhiteboardPage() {
         setStepIndex(i);
         setStepTotal(total);
       },
+      onNarrationChange: (n) => setNarration(n),
       onComplete: () => setStatus("done"),
       onError: (msg) => {
         setErrorMsg(msg);
@@ -99,6 +103,7 @@ export default function WhiteboardPage() {
     setStatus("idle");
     setErrorMsg("");
     setActiveCommands([]);
+    setNarration(null);
   };
 
   const handleLoadSample = () => {
@@ -230,6 +235,9 @@ export default function WhiteboardPage() {
           <div className="flex flex-1 overflow-hidden">
             <WhiteboardCanvas canvas={canvas} elements={elements} />
           </div>
+
+          {/* Narration / subtitle bar — appears between canvas and step indicator */}
+          <NarrationBar text={narration} />
 
           <Separator />
           <div className="flex items-center gap-3 px-6 py-3 text-xs">

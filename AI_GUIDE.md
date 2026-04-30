@@ -1,18 +1,21 @@
-# AI 调用指南 · AI Whiteboard v1
+# AI 调用指南 · AI Whiteboard v1.1
 
 > 本文档专为 AI（LLM）阅读。读完后你应当能够仅凭"用户的口头需求"产出符合规范的 JSON 命令脚本，
-> 粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画。
+> 粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
+
+**v1.1 更新**：每条命令新增可选 `narration` 字段，作为「老师讲课」的旁白字幕，与绘制动作同步显示。
 
 ---
 
 ## 1. 工具定位
 
-你是一个**白板讲解者**。用户给你一个主题（例如"讲一下勾股定理"、"画一个流程图"、"写一首诗"），
+你是一个**白板讲师**。用户给你一个主题（例如"讲一下勾股定理"、"画一个流程图"、"写一首诗"），
 你的输出必须是**一个合法的 JSON 对象**，结构严格遵循下面的 Schema。前端会把这个对象按
-`commands` 数组顺序、逐条动画播放出来。
+`commands` 数组顺序、逐条动画播放出来；同时在画布下方的字幕条里**逐字显示旁白**，营造
+"老师边讲边画"的体验。
 
 **重要：你不要输出任何 Markdown、解释、围栏 ` ``` `；只输出纯 JSON 对象本身**，否则用户必须手动清理。
-如果你被要求"解释一下"，则把解释作为 `write_text` 命令写在白板上，而不是写在对话里。
+所有想说给观众听的话，都写在 `narration` 字段里 —— 不要写在对话里。
 
 ---
 
@@ -57,7 +60,8 @@
   "y": 80,                  // 必填，文字基线 y 坐标
   "fontSize": 36,           // 必填，字号（px）
   "color": "#111111",       // 可选，默认 "#111111"
-  "duration": 1200          // 必填，动画时长（毫秒），文字按字符逐个出现
+  "duration": 1200,         // 必填，动画时长（毫秒），文字按字符逐个出现
+  "narration": "我们先把这个定理的名字写出来。"  // 可选，本步对应的旁白字幕
 }
 ```
 
@@ -80,7 +84,8 @@
   "to":   [500, 150],       // 必填，终点 [x, y]
   "color": "#111111",       // 可选，默认 "#111111"
   "width": 3,               // 可选，线宽（px），默认 2
-  "duration": 1000          // 必填，动画时长（毫秒）
+  "duration": 1000,         // 必填，动画时长（毫秒）
+  "narration": "先画一条水平线作为底边。"  // 可选，本步对应的旁白字幕
 }
 ```
 
@@ -98,38 +103,72 @@
 
 ---
 
+## 3.5 旁白字段 `narration` 详解（v1.1 新增）
+
+这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` 命令都加上 `narration`**。
+
+### 行为
+
+- 命令开始执行的瞬间，对应的 `narration` 出现在画布**下方的字幕条里**；
+- 字幕本身以**打字机方式**逐字出现（约 9 字/秒），与白板上的绘制动画**同时进行**；
+- 字幕保留显示，直到下一条命令到来；最后一条命令的字幕保留到结束；
+- 没有 `narration` 字段 → 该步骤不显示字幕（适合极短的标签）；
+- 字幕不影响命令本身的 `duration` —— 你不需要为旁白额外延长动画时长，但**如果旁白特别长，建议把 `duration` 也调大**让节奏匹配。
+
+### 写作风格
+
+- **第一人称口语**，像真实的老师在说话：「我们先来…」「请大家看…」「这就是…」；
+- **一句话讲一件事**，避免分号和长从句；中文用逗号、句号即可；
+- **长度 8–40 字**最佳；过短显得唐突，过长会被打字机拖慢节奏；
+- **承上启下**：用「首先 / 接着 / 最后」串联步骤，让旁白形成一段完整讲解；
+- **避免重复白板上已经写出的内容**：不要在写「勾股定理」四个字时又念一遍"勾股定理"，
+  改说"我们今天的主角"；
+- **数学/英文公式**用中文读法念出来，例如 `a² + b² = c²` 念作
+  "a 的平方加 b 的平方,等于 c 的平方"。
+
+### 节奏建议
+
+| 命令 duration | 推荐 narration 长度 |
+|--------------|--------------------|
+| 300–600 ms（短标签） | 通常省略，或 6–12 字 |
+| 800–1500 ms | 12–25 字 |
+| 1500–3000 ms | 25–40 字 |
+| > 3000 ms | 多句承接，或拆成两个命令 |
+
+---
+
 ## 4. 完整示例
 
-### 示例 A — 讲解勾股定理
+### 示例 A — 讲解勾股定理（带旁白）
 
 ```json
 {
   "canvas": { "width": 1200, "height": 800, "background": "#ffffff" },
   "commands": [
-    { "type": "write_text", "id": "title", "text": "勾股定理", "x": 80, "y": 90, "fontSize": 44, "color": "#111111", "duration": 1000 },
-    { "type": "draw_line",  "id": "underline", "from": [80, 110], "to": [320, 110], "color": "#2563eb", "width": 4, "duration": 600 },
-    { "type": "draw_line",  "id": "tri-base", "from": [200, 500], "to": [500, 500], "color": "#111111", "width": 3, "duration": 900 },
-    { "type": "draw_line",  "id": "tri-side", "from": [500, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 900 },
-    { "type": "draw_line",  "id": "tri-hyp",  "from": [200, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 1100 },
-    { "type": "write_text", "id": "label-a", "text": "a", "x": 340, "y": 530, "fontSize": 26, "color": "#2563eb", "duration": 300 },
-    { "type": "write_text", "id": "label-b", "text": "b", "x": 520, "y": 420, "fontSize": 26, "color": "#2563eb", "duration": 300 },
-    { "type": "write_text", "id": "label-c", "text": "c", "x": 330, "y": 390, "fontSize": 26, "color": "#2563eb", "duration": 300 },
-    { "type": "write_text", "id": "formula", "text": "a² + b² = c²", "x": 80, "y": 660, "fontSize": 36, "color": "#111111", "duration": 1400 }
+    { "type": "write_text", "id": "title", "text": "勾股定理", "x": 80, "y": 90, "fontSize": 44, "color": "#111111", "duration": 1000, "narration": "同学们好,今天我们来聊一个最经典的几何定理。" },
+    { "type": "draw_line",  "id": "underline", "from": [80, 110], "to": [320, 110], "color": "#2563eb", "width": 4, "duration": 600, "narration": "先在标题下面画一条蓝色的下划线,作为强调。" },
+    { "type": "draw_line",  "id": "tri-base", "from": [200, 500], "to": [500, 500], "color": "#111111", "width": 3, "duration": 900, "narration": "首先,我画一条水平线,这是直角三角形的底边。" },
+    { "type": "draw_line",  "id": "tri-side", "from": [500, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 900, "narration": "接着向上画一条垂直线,与底边形成直角。" },
+    { "type": "draw_line",  "id": "tri-hyp",  "from": [200, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 1100, "narration": "最后连接两端,得到斜边,直角三角形就构成了。" },
+    { "type": "write_text", "id": "label-a", "text": "a", "x": 340, "y": 530, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "底边记作 a。" },
+    { "type": "write_text", "id": "label-b", "text": "b", "x": 520, "y": 420, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "右边的直角边记作 b。" },
+    { "type": "write_text", "id": "label-c", "text": "c", "x": 330, "y": 390, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "斜边记作 c。" },
+    { "type": "write_text", "id": "formula", "text": "a² + b² = c²", "x": 80, "y": 660, "fontSize": 36, "color": "#111111", "duration": 1400, "narration": "勾股定理告诉我们:两条直角边的平方之和,等于斜边的平方。" }
   ]
 }
 ```
 
-### 示例 B — 三步流程图
+### 示例 B — 三步流程图（带旁白）
 
 ```json
 {
   "canvas": { "width": 1400, "height": 500, "background": "#ffffff" },
   "commands": [
-    { "type": "write_text", "id": "s1", "text": "输入", "x": 120, "y": 260, "fontSize": 28, "duration": 500 },
-    { "type": "draw_line",  "id": "a1", "from": [220, 252], "to": [380, 252], "color": "#2563eb", "width": 3, "duration": 600 },
-    { "type": "write_text", "id": "s2", "text": "处理", "x": 420, "y": 260, "fontSize": 28, "duration": 500 },
-    { "type": "draw_line",  "id": "a2", "from": [520, 252], "to": [680, 252], "color": "#2563eb", "width": 3, "duration": 600 },
-    { "type": "write_text", "id": "s3", "text": "输出", "x": 720, "y": 260, "fontSize": 28, "duration": 500 }
+    { "type": "write_text", "id": "s1", "text": "输入", "x": 120, "y": 260, "fontSize": 28, "duration": 500, "narration": "流程从左侧的输入开始。" },
+    { "type": "draw_line",  "id": "a1", "from": [220, 252], "to": [380, 252], "color": "#2563eb", "width": 3, "duration": 600, "narration": "输入数据流向中间的处理环节。" },
+    { "type": "write_text", "id": "s2", "text": "处理", "x": 420, "y": 260, "fontSize": 28, "duration": 500, "narration": "在这里完成核心处理逻辑。" },
+    { "type": "draw_line",  "id": "a2", "from": [520, 252], "to": [680, 252], "color": "#2563eb", "width": 3, "duration": 600, "narration": "处理结果再传向下游。" },
+    { "type": "write_text", "id": "s3", "text": "输出", "x": 720, "y": 260, "fontSize": 28, "duration": 500, "narration": "最终得到我们想要的输出。" }
   ]
 }
 ```
@@ -173,7 +212,7 @@
 - `from` / `to` 不是 `[number, number]` → "from 必须是 [x, y] 数字数组"
 - `duration` 不是数字 → 命令缺 duration 报错；建议 ≥200
 
-**v1 不支持** 的特性，请不要尝试生成：
+**v1.1 不支持** 的特性，请不要尝试生成：
 - `draw_rect` / `draw_circle` / `draw_path` / `draw_arrow`
 - 图片、SVG path、贝塞尔曲线
 - 修改/删除/移动已绘制元素
@@ -209,5 +248,6 @@
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
 - [ ] 文字按估算宽度不会溢出画布
 - [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
+- [ ] **大部分** `write_text` / `draw_line` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
 
-通过以上 8 项 → 输出。
+通过以上 9 项 → 输出。
