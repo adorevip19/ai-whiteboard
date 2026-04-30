@@ -1,4 +1,4 @@
-// Built-in sample script demonstrating write_text, draw_line, draw_arrow, draw_path, and narration.
+// Built-in sample script demonstrating drawing, erasing, and narration.
 import type { WhiteboardScript } from "./commandTypes";
 
 export const sampleScript: WhiteboardScript = {
@@ -68,6 +68,33 @@ export const sampleScript: WhiteboardScript = {
       headAngle: 30,
       duration: 900,
       narration: "这支绿色箭头指向接下来要观察的直角三角形。",
+    },
+    {
+      type: "draw_line",
+      id: "temp-guide",
+      from: [760, 235],
+      to: [1080, 235],
+      color: "#94a3b8",
+      width: 2,
+      duration: 500,
+      narration: "我先画一条临时辅助线,等会儿会把它删除。",
+    },
+    {
+      type: "erase_object",
+      targetId: "temp-guide",
+      duration: 400,
+      narration: "这条辅助线已经用完,现在直接按对象删除。",
+    },
+    {
+      type: "erase_area",
+      id: "trim-wave",
+      shape: "rect",
+      x: 1000,
+      y: 105,
+      width: 90,
+      height: 95,
+      duration: 400,
+      narration: "也可以只擦除局部区域,像橡皮擦一样盖掉一小段笔迹。",
     },
     {
       type: "write_text",
