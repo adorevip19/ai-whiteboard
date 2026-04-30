@@ -24,6 +24,7 @@ export interface RunnerCallbacks {
 
 export interface RunnerOptions {
   playbackSpeed?: number;
+  commandDurationsMs?: WeakMap<WhiteboardCommand, number>;
 }
 
 export interface WaitState {
@@ -39,6 +40,7 @@ export class ScriptRunner {
   private annotations: AnnotationElement[] = [];
   private canvas: CanvasConfig;
   private playbackSpeed: number;
+  private commandDurationsMs?: WeakMap<WhiteboardCommand, number>;
   private waitResolver: (() => void) | null = null;
 
   constructor(script: WhiteboardScript, cb: RunnerCallbacks, options: RunnerOptions = {}) {
@@ -46,6 +48,7 @@ export class ScriptRunner {
     this.cb = cb;
     this.canvas = script.canvas;
     this.playbackSpeed = this.normalizePlaybackSpeed(options.playbackSpeed);
+    this.commandDurationsMs = options.commandDurationsMs;
   }
 
   cancel() {
@@ -132,24 +135,32 @@ export class ScriptRunner {
       : 1;
   }
 
-  private durationFor(duration: number) {
+  private durationFor(duration: number, cmd?: WhiteboardCommand) {
+    const commandDuration = cmd ? this.commandDurationsMs?.get(cmd) : undefined;
+    if (typeof commandDuration === "number" && Number.isFinite(commandDuration)) {
+      return Math.max(commandDuration, 1);
+    }
     return Math.max(duration / this.playbackSpeed, 1);
   }
 
   private estimateCommandDuration(cmd: WhiteboardCommand) {
+    const commandDuration = this.commandDurationsMs?.get(cmd);
+    if (typeof commandDuration === "number" && Number.isFinite(commandDuration)) {
+      return Math.max(commandDuration, 1);
+    }
     if ("duration" in cmd && typeof cmd.duration === "number") {
-      return this.durationFor(cmd.duration);
+      return this.durationFor(cmd.duration, cmd);
     }
     return undefined;
   }
 
-  private wait(duration = 0) {
+  private wait(duration = 0, cmd?: WhiteboardCommand) {
     return new Promise<void>((resolve) => {
       if (duration <= 0 || this.cancelled) {
         resolve();
         return;
       }
-      window.setTimeout(resolve, this.durationFor(duration));
+      window.setTimeout(resolve, this.durationFor(duration, cmd));
     });
   }
 
@@ -225,7 +236,7 @@ export class ScriptRunner {
         resolve();
         return;
       }
-      const duration = this.durationFor(cmd.duration);
+      const duration = this.durationFor(cmd.duration, cmd);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -270,7 +281,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = this.durationFor(cmd.duration);
+      const duration = this.durationFor(cmd.duration, cmd);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -321,7 +332,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = this.durationFor(cmd.duration);
+      const duration = this.durationFor(cmd.duration, cmd);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -382,7 +393,7 @@ export class ScriptRunner {
         return;
       }
 
-      const duration = this.durationFor(cmd.duration);
+      const duration = this.durationFor(cmd.duration, cmd);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -444,7 +455,7 @@ export class ScriptRunner {
     const targetIds = new Set(cmd.targetIds ?? []);
     this.elements = this.elements.filter((el) => !targetIds.has(el.id));
     this.commit();
-    await this.wait(cmd.duration ?? 300);
+    await this.wait(cmd.duration ?? 300, cmd);
   }
 
   private async eraseArea(
@@ -463,7 +474,7 @@ export class ScriptRunner {
       color: this.canvas.background,
     });
     this.commit();
-    await this.wait(cmd.duration ?? 300);
+    await this.wait(cmd.duration ?? 300, cmd);
   }
 
   private async clearCanvas(
@@ -477,7 +488,7 @@ export class ScriptRunner {
     }
     this.commit();
     this.commitAnnotations();
-    await this.wait(cmd.duration ?? 300);
+    await this.wait(cmd.duration ?? 300, cmd);
   }
 
   private waitForUser(cmd: Extract<WhiteboardCommand, { type: "wait" }>) {
@@ -590,6 +601,7 @@ export class ScriptRunner {
     color: string,
     width: number,
     duration: number,
+    cmd: WhiteboardCommand,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
       const annIndex = this.annotations.length;
@@ -618,7 +630,7 @@ export class ScriptRunner {
         return;
       }
 
-      const dur = this.durationFor(duration);
+      const dur = this.durationFor(duration, cmd);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -681,6 +693,7 @@ export class ScriptRunner {
       cmd.color ?? "#f59e0b",
       cmd.width ?? 4,
       cmd.duration,
+      cmd,
     );
   }
 
@@ -700,6 +713,7 @@ export class ScriptRunner {
       cmd.color ?? "#ef4444",
       cmd.width ?? 3,
       cmd.duration,
+      cmd,
     );
   }
 
@@ -708,6 +722,6 @@ export class ScriptRunner {
   ) {
     this.annotations = [];
     this.commitAnnotations();
-    await this.wait(cmd.duration ?? 300);
+    await this.wait(cmd.duration ?? 300, cmd);
   }
 }
