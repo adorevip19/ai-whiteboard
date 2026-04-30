@@ -35,7 +35,6 @@ type RunStatus = "idle" | "preparing" | "running" | "done" | "error";
 type CachedTtsAudio = {
   url: string;
   blob: Blob;
-  durationMs: number;
 };
 
 function getNarrationFromCommand(cmd: WhiteboardCommand) {
@@ -74,12 +73,20 @@ export default function WhiteboardPage() {
   const ttsRequestIdRef = useRef(0);
   const ttsCacheRef = useRef<Map<string, CachedTtsAudio>>(new Map());
   const ttsPrefetchControllerRef = useRef<AbortController | null>(null);
+  const audioResolveRef = useRef<(() => void) | null>(null);
+
+  const resolveActiveAudio = () => {
+    const resolve = audioResolveRef.current;
+    audioResolveRef.current = null;
+    resolve?.();
+  };
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       runnerRef.current?.cancel();
       audioRef.current?.pause();
+      resolveActiveAudio();
       ttsPrefetchControllerRef.current?.abort();
       Array.from(ttsCacheRef.current.values()).forEach((cached) => {
         URL.revokeObjectURL(cached.url);
@@ -93,47 +100,66 @@ export default function WhiteboardPage() {
     runnerRef.current?.setPlaybackSpeed(playbackSpeed);
   }, [playbackSpeed]);
 
-  useEffect(() => {
+  const playCachedNarration = (text: string | null) => {
+    setNarration(text);
+
+    resolveActiveAudio();
     const requestId = ++ttsRequestIdRef.current;
     audioRef.current?.pause();
     audioRef.current = null;
 
     if (!ttsEnabled) {
       setTtsStatus("TTS 未开启");
-      return;
+      return Promise.resolve();
     }
-    if (!narration) {
+    if (!text) {
       setTtsStatus("等待旁白");
-      return;
+      return Promise.resolve();
     }
 
-    const cached = ttsCacheRef.current.get(getTtsCacheKey(narration));
+    const cached = ttsCacheRef.current.get(getTtsCacheKey(text));
     if (!cached) {
       setTtsStatus("语音缓存未命中，请重新运行脚本");
-      return;
+      return Promise.resolve();
     }
 
-    const audio = new Audio(cached.url);
-    audioRef.current = audio;
+    return new Promise<void>((resolve) => {
+      const audio = new Audio(cached.url);
+      audioRef.current = audio;
 
-    const playAudio = () => {
-      if (requestId !== ttsRequestIdRef.current) return;
-      audio.playbackRate = clampVoiceSpeed(playbackSpeedRef.current);
-      void audio.play().then(
-        () => setTtsStatus("语音播放中"),
-        () => setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS"),
-      );
-    };
+      const finish = () => {
+        if (audioResolveRef.current === finish) {
+          audioResolveRef.current = null;
+        }
+        if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
+        resolve();
+      };
+      audioResolveRef.current = finish;
 
-    if (Number.isFinite(audio.duration) && audio.duration > 0) {
-      playAudio();
-    } else {
-      audio.onloadedmetadata = playAudio;
-    }
-    audio.onended = () => {
-      if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
-    };
-  }, [narration, ttsEnabled]);
+      const playAudio = () => {
+        if (requestId !== ttsRequestIdRef.current) {
+          finish();
+          return;
+        }
+        audio.playbackRate = clampVoiceSpeed(playbackSpeedRef.current);
+        void audio.play().then(
+          () => setTtsStatus("语音播放中"),
+          () => {
+            setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS");
+            finish();
+          },
+        );
+      };
+
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        playAudio();
+      } else {
+        audio.onloadedmetadata = playAudio;
+      }
+      audio.onended = finish;
+      audio.onerror = finish;
+    });
+  };
 
   const synthesizeNarration = async (
     text: string,
@@ -155,43 +181,12 @@ export default function WhiteboardPage() {
     }
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
-    const durationMs = await loadAudioDurationMs(url);
     const audio = {
       blob,
-      durationMs,
       url,
     };
     ttsCacheRef.current.set(cacheKey, audio);
     return audio;
-  };
-
-  const loadAudioDurationMs = (url: string) =>
-    new Promise<number>((resolve, reject) => {
-      const audio = new Audio(url);
-      audio.preload = "metadata";
-      audio.onloadedmetadata = () => {
-        if (Number.isFinite(audio.duration) && audio.duration > 0) {
-          resolve(audio.duration * 1000);
-        } else {
-          reject(new Error("无法读取语音时长。"));
-        }
-      };
-      audio.onerror = () => reject(new Error("无法读取语音时长。"));
-    });
-
-  const buildVoiceAlignedDurations = (commands: WhiteboardCommand[]) => {
-    const durations = new WeakMap<WhiteboardCommand, number>();
-    const voiceSpeed = clampVoiceSpeed(playbackSpeed);
-    commands.forEach((cmd) => {
-      const commandNarration = getNarrationFromCommand(cmd);
-      const cached = commandNarration
-        ? ttsCacheRef.current.get(getTtsCacheKey(commandNarration))
-        : null;
-      if (cached) {
-        durations.set(cmd, cached.durationMs / voiceSpeed);
-      }
-    });
-    return durations;
   };
 
   const prefetchNarrations = async (commands: WhiteboardCommand[]) => {
@@ -262,9 +257,6 @@ export default function WhiteboardPage() {
     if (!ttsReady) {
       return;
     }
-    const commandDurationsMs = ttsEnabled
-      ? buildVoiceAlignedDurations(result.script.commands)
-      : undefined;
 
     // Reset state for a fresh run.
     setActiveCommands(result.script.commands);
@@ -285,9 +277,7 @@ export default function WhiteboardPage() {
         setStepIndex(i);
         setStepTotal(total);
       },
-      onNarrationChange: (n) => {
-        setNarration(n);
-      },
+      onNarrationChange: (n) => playCachedNarration(n),
       onWaitChange: (wait) => setWaitState(wait),
       onComplete: () => {
         setWaitState(null);
@@ -297,7 +287,7 @@ export default function WhiteboardPage() {
         setErrorMsg(msg);
         setStatus("error");
       },
-    }, { playbackSpeed, commandDurationsMs });
+    }, { playbackSpeed });
     runnerRef.current = runner;
     void runner.run();
   };
@@ -306,7 +296,9 @@ export default function WhiteboardPage() {
     runnerRef.current?.cancel();
     runnerRef.current = null;
     ttsPrefetchControllerRef.current?.abort();
+    ttsRequestIdRef.current += 1;
     audioRef.current?.pause();
+    resolveActiveAudio();
     setStatus("idle");
     setWaitState(null);
   };
@@ -315,7 +307,9 @@ export default function WhiteboardPage() {
     runnerRef.current?.cancel();
     runnerRef.current = null;
     ttsPrefetchControllerRef.current?.abort();
+    ttsRequestIdRef.current += 1;
     audioRef.current?.pause();
+    resolveActiveAudio();
     setElements([]);
     setAnnotations([]);
     setStepIndex(0);
