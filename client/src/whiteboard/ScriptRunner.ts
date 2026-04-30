@@ -56,6 +56,7 @@ export class ScriptRunner {
         const narration =
           cmd.type === "write_text" ||
           cmd.type === "draw_line" ||
+          cmd.type === "draw_arrow" ||
           cmd.type === "draw_path"
             ? (cmd.narration ?? null)
             : null;
@@ -91,6 +92,9 @@ export class ScriptRunner {
     }
     if (cmd.type === "draw_line") {
       return this.animateLine(cmd);
+    }
+    if (cmd.type === "draw_arrow") {
+      return this.animateArrow(cmd);
     }
     if (cmd.type === "draw_path") {
       return this.animatePath(cmd);
@@ -190,6 +194,56 @@ export class ScriptRunner {
         }
         if (t >= 1) {
           if (target && target.kind === "line") {
+            target.currentEnd = [x2, y2];
+            this.commit();
+          }
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateArrow(
+    cmd: Extract<WhiteboardCommand, { type: "draw_arrow" }>,
+  ) {
+    return new Promise<void>((resolve) => {
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "arrow",
+        id: cmd.id,
+        from: [cmd.from[0], cmd.from[1]],
+        to: [cmd.to[0], cmd.to[1]],
+        currentEnd: [cmd.from[0], cmd.from[1]],
+        color: cmd.color ?? "#111111",
+        width: cmd.width ?? 2,
+        headSize: cmd.headSize ?? Math.max((cmd.width ?? 2) * 4, 12),
+        headAngle: cmd.headAngle ?? 28,
+      });
+      this.commit();
+
+      const duration = Math.max(cmd.duration, 1);
+      const start = performance.now();
+      const [x1, y1] = cmd.from;
+      const [x2, y2] = cmd.to;
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        const cx = x1 + (x2 - x1) * t;
+        const cy = y1 + (y2 - y1) * t;
+        const target = this.elements[elIndex];
+        if (target && target.kind === "arrow") {
+          target.currentEnd = [cx, cy];
+          this.commit();
+        }
+        if (t >= 1) {
+          if (target && target.kind === "arrow") {
             target.currentEnd = [x2, y2];
             this.commit();
           }
