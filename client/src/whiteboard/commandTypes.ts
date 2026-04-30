@@ -82,6 +82,13 @@ export interface ClearCanvasCommand {
   narration?: string;
 }
 
+export interface WaitCommand {
+  type: "wait";
+  id?: string;
+  message?: string;
+  narration?: string;
+}
+
 // --- Annotation layer commands ---
 
 export interface AnnotateUnderlineCommand {
@@ -133,6 +140,7 @@ export type WhiteboardCommand =
   | EraseObjectCommand
   | EraseAreaCommand
   | ClearCanvasCommand
+  | WaitCommand
   | AnnotateUnderlineCommand
   | AnnotateCircleCommand
   | ClearAnnotationsCommand;
@@ -529,6 +537,23 @@ function validateCommand(
     };
   }
 
+  if (type === "wait") {
+    if (o.id !== undefined && typeof o.id !== "string")
+      return { ok: false, error: `${where} (wait) id 必须是字符串。` };
+    if (o.message !== undefined && typeof o.message !== "string")
+      return { ok: false, error: `${where} (wait) message 必须是字符串。` };
+    return {
+      ok: true,
+      command: {
+        type: "wait",
+        id: typeof o.id === "string" ? o.id : undefined,
+        message:
+          typeof o.message === "string" ? o.message : "点击“下一步”继续讲解。",
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "set_canvas") {
     if (typeof o.width !== "number" || typeof o.height !== "number")
       return { ok: false, error: `${where} (set_canvas) 缺少 width/height。` };
@@ -649,6 +674,9 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "clear_canvas") {
     return "清空画布";
+  }
+  if (cmd.type === "wait") {
+    return cmd.message ?? "等待用户点击下一步";
   }
   if (cmd.type === "set_canvas") {
     return `设置画布 ${cmd.width}×${cmd.height}`;
