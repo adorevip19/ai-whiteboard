@@ -11,6 +11,7 @@ import { ScriptRunner } from "@/whiteboard/ScriptRunner";
 import {
   validateScript,
   describeCommand,
+  type AnnotationElement,
   type CanvasConfig,
   type RenderedElement,
   type WhiteboardCommand,
@@ -23,6 +24,7 @@ export default function WhiteboardPage() {
   const [scriptText, setScriptText] = useState<string>(sampleScriptString);
   const [canvas, setCanvas] = useState<CanvasConfig>(sampleScript.canvas);
   const [elements, setElements] = useState<RenderedElement[]>([]);
+  const [annotations, setAnnotations] = useState<AnnotationElement[]>([]);
   const [stepIndex, setStepIndex] = useState(0);
   const [stepTotal, setStepTotal] = useState(0);
   const [status, setStatus] = useState<RunStatus>("idle");
@@ -65,6 +67,7 @@ export default function WhiteboardPage() {
     setActiveCommands(result.script.commands);
     setCanvas(result.script.canvas);
     setElements([]);
+    setAnnotations([]);
     setNarration(null);
     setStepIndex(0);
     setStepTotal(result.script.commands.length);
@@ -73,6 +76,7 @@ export default function WhiteboardPage() {
     const runner = new ScriptRunner(result.script, {
       onCanvasChange: (c) => setCanvas(c),
       onElementsChange: (els) => setElements(els),
+      onAnnotationsChange: (anns) => setAnnotations(anns),
       onStepChange: (i, total) => {
         setStepIndex(i);
         setStepTotal(total);
@@ -98,6 +102,7 @@ export default function WhiteboardPage() {
     runnerRef.current?.cancel();
     runnerRef.current = null;
     setElements([]);
+    setAnnotations([]);
     setStepIndex(0);
     setStepTotal(0);
     setStatus("idle");
@@ -233,7 +238,7 @@ export default function WhiteboardPage() {
         {/* Right: whiteboard + step indicator */}
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex flex-1 overflow-hidden">
-            <WhiteboardCanvas canvas={canvas} elements={elements} />
+            <WhiteboardCanvas canvas={canvas} elements={elements} annotations={annotations} />
           </div>
 
           {/* Narration / subtitle bar — appears between canvas and step indicator */}

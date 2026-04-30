@@ -2,6 +2,7 @@
 // animating each command using requestAnimationFrame. Calls listener
 // callbacks so React state stays in sync.
 import type {
+  AnnotationElement,
   CanvasConfig,
   RenderedElement,
   WhiteboardCommand,
@@ -11,6 +12,7 @@ import type {
 export interface RunnerCallbacks {
   onCanvasChange: (canvas: CanvasConfig) => void;
   onElementsChange: (elements: RenderedElement[]) => void;
+  onAnnotationsChange: (annotations: AnnotationElement[]) => void;
   onStepChange: (currentIndex: number, total: number) => void;
   // Push the full narration string for the upcoming command. The UI is
   // responsible for animating its appearance (typewriter). null clears it.
@@ -25,6 +27,7 @@ export class ScriptRunner {
   private cancelled = false;
   private currentRaf: number | null = null;
   private elements: RenderedElement[] = [];
+  private annotations: AnnotationElement[] = [];
   private canvas: CanvasConfig;
 
   constructor(script: WhiteboardScript, cb: RunnerCallbacks) {
@@ -45,9 +48,11 @@ export class ScriptRunner {
     try {
       // Reset
       this.elements = [];
+      this.annotations = [];
       this.canvas = this.script.canvas;
       this.cb.onCanvasChange(this.canvas);
       this.cb.onElementsChange([]);
+      this.cb.onAnnotationsChange([]);
 
       this.cb.onNarrationChange(null);
       const total = this.script.commands.length;
@@ -63,7 +68,10 @@ export class ScriptRunner {
           cmd.type === "draw_path" ||
           cmd.type === "erase_object" ||
           cmd.type === "erase_area" ||
-          cmd.type === "clear_canvas"
+          cmd.type === "clear_canvas" ||
+          cmd.type === "annotate_underline" ||
+          cmd.type === "annotate_circle" ||
+          cmd.type === "clear_annotations"
             ? (cmd.narration ?? null)
             : null;
         // Always push (even null) so the bar updates between steps.
@@ -82,6 +90,10 @@ export class ScriptRunner {
   private commit() {
     // Push a shallow copy so React detects the change.
     this.cb.onElementsChange([...this.elements]);
+  }
+
+  private commitAnnotations() {
+    this.cb.onAnnotationsChange([...this.annotations]);
   }
 
   private wait(duration = 0) {
@@ -124,6 +136,15 @@ export class ScriptRunner {
     }
     if (cmd.type === "clear_canvas") {
       return this.clearCanvas(cmd);
+    }
+    if (cmd.type === "annotate_underline") {
+      return this.animateAnnotateUnderline(cmd);
+    }
+    if (cmd.type === "annotate_circle") {
+      return this.animateAnnotateCircle(cmd);
+    }
+    if (cmd.type === "clear_annotations") {
+      return this.clearAnnotations(cmd);
     }
     return Promise.reject(
       // Should never reach here because validation rejected unsupported types,
@@ -399,11 +420,231 @@ export class ScriptRunner {
     cmd: Extract<WhiteboardCommand, { type: "clear_canvas" }>,
   ) {
     this.elements = [];
+    this.annotations = [];
     if (cmd.background) {
       this.canvas = { ...this.canvas, background: cmd.background };
       this.cb.onCanvasChange(this.canvas);
     }
     this.commit();
+    this.commitAnnotations();
+    await this.wait(cmd.duration ?? 300);
+  }
+
+  // ── Annotation layer ────────────────────────────────────────────────────────
+
+  /**
+   * Simple LCG seeded RNG so hand-drawn wobble is deterministic per element id.
+   * Same script always produces the same "hand-drawn" appearance.
+   */
+  private seededRng(seed: string): () => number {
+    let state = 0;
+    for (let i = 0; i < seed.length; i++) {
+      state = (state * 31 + seed.charCodeAt(i)) & 0x7fffffff;
+    }
+    return () => {
+      state = (state * 1664525 + 1013904223) & 0x7fffffff;
+      return state / 0x7fffffff;
+    };
+  }
+
+  /**
+   * Generate a hand-drawn underline path: straight line from (x1,y1) to (x2,y2)
+   * with small perpendicular wobble, giving a natural pen-on-paper feel.
+   */
+  private generateHandDrawnLine(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    seed: string,
+  ): [number, number][] {
+    const rng = this.seededRng(seed);
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len === 0) return [[x1, y1]];
+
+    // One control point roughly every 20px; at least 6 for smooth feel
+    const numSegments = Math.max(6, Math.round(len / 20));
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const invLen = 1 / len;
+    // Perpendicular unit vector (rotated 90°)
+    const nx = -dy * invLen;
+    const ny = dx * invLen;
+
+    const points: [number, number][] = [];
+    for (let i = 0; i <= numSegments; i++) {
+      const t = i / numSegments;
+      const baseX = x1 + dx * t;
+      const baseY = y1 + dy * t;
+      // Perpendicular wobble: ±2 px, tapers to near-zero at endpoints
+      const taper = Math.sin(t * Math.PI); // 0 at ends, 1 in the middle
+      const wobble = (rng() - 0.5) * 4 * taper;
+      points.push([baseX + nx * wobble, baseY + ny * wobble]);
+    }
+    return points;
+  }
+
+  /**
+   * Generate a hand-drawn loop/circle: an approximate ellipse path with slight
+   * radius jitter and a small overdraw at the close so it looks like a real pen
+   * circling something.
+   */
+  private generateHandDrawnEllipse(
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+    seed: string,
+  ): [number, number][] {
+    const rng = this.seededRng(seed);
+    // Points spaced ~10px apart along perimeter (approx Ramanujan ellipse formula)
+    const perim = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
+    const numPoints = Math.max(24, Math.round(perim / 10));
+
+    // Slight overdraw (loop past 360° by ~15°) for the "pen closes the circle" look
+    const startAngle = -0.25;
+    const totalAngle = Math.PI * 2 + 0.4;
+
+    const points: [number, number][] = [];
+    for (let i = 0; i <= numPoints; i++) {
+      const angle = startAngle + totalAngle * (i / numPoints);
+      // Radius jitter: ±4% per point
+      const jitter = 1 + (rng() - 0.5) * 0.08;
+      const x = cx + rx * jitter * Math.cos(angle);
+      const y = cy + ry * jitter * Math.sin(angle);
+      points.push([x, y]);
+    }
+    return points;
+  }
+
+  /**
+   * Shared path-based animation for annotation elements.
+   * Identical walk algorithm to animatePath so the reveal feels consistent.
+   */
+  private animateAnnotationPath(
+    id: string,
+    points: [number, number][],
+    color: string,
+    width: number,
+    duration: number,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const annIndex = this.annotations.length;
+      this.annotations.push({
+        kind: "annotation",
+        id,
+        points,
+        currentPoints: [points[0]],
+        color,
+        width,
+      });
+      this.commitAnnotations();
+
+      const segmentLengths: number[] = [];
+      let totalLength = 0;
+      for (let i = 1; i < points.length; i++) {
+        const [x1, y1] = points[i - 1];
+        const [x2, y2] = points[i];
+        const l = Math.hypot(x2 - x1, y2 - y1);
+        segmentLengths.push(l);
+        totalLength += l;
+      }
+
+      if (totalLength === 0) {
+        resolve();
+        return;
+      }
+
+      const dur = Math.max(duration, 1);
+      const start = performance.now();
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / dur, 1);
+        const targetLen = totalLength * t;
+        let walked = 0;
+        const visible: [number, number][] = [points[0]];
+
+        for (let i = 1; i < points.length; i++) {
+          const seg = segmentLengths[i - 1];
+          const next = walked + seg;
+          if (next <= targetLen) {
+            visible.push(points[i]);
+            walked = next;
+            continue;
+          }
+          if (seg > 0) {
+            const localT = Math.max(0, Math.min((targetLen - walked) / seg, 1));
+            const [x1, y1] = points[i - 1];
+            const [x2, y2] = points[i];
+            visible.push([x1 + (x2 - x1) * localT, y1 + (y2 - y1) * localT]);
+          }
+          break;
+        }
+
+        const target = this.annotations[annIndex];
+        if (target && target.kind === "annotation") {
+          target.currentPoints = t >= 1 ? points : visible;
+          this.commitAnnotations();
+        }
+
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateAnnotateUnderline(
+    cmd: Extract<WhiteboardCommand, { type: "annotate_underline" }>,
+  ) {
+    const points = this.generateHandDrawnLine(
+      cmd.x1,
+      cmd.y1,
+      cmd.x2,
+      cmd.y2,
+      cmd.id,
+    );
+    return this.animateAnnotationPath(
+      cmd.id,
+      points,
+      cmd.color ?? "#f59e0b",
+      cmd.width ?? 4,
+      cmd.duration,
+    );
+  }
+
+  private animateAnnotateCircle(
+    cmd: Extract<WhiteboardCommand, { type: "annotate_circle" }>,
+  ) {
+    const points = this.generateHandDrawnEllipse(
+      cmd.cx,
+      cmd.cy,
+      cmd.rx,
+      cmd.ry,
+      cmd.id,
+    );
+    return this.animateAnnotationPath(
+      cmd.id,
+      points,
+      cmd.color ?? "#ef4444",
+      cmd.width ?? 3,
+      cmd.duration,
+    );
+  }
+
+  private async clearAnnotations(
+    cmd: Extract<WhiteboardCommand, { type: "clear_annotations" }>,
+  ) {
+    this.annotations = [];
+    this.commitAnnotations();
     await this.wait(cmd.duration ?? 300);
   }
 }

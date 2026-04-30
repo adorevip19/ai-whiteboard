@@ -2,14 +2,15 @@
 // shape elements (text/lines) keep their identity, can be cleanly animated,
 // and re-render declaratively from React state.
 import { useEffect, useRef, useState } from "react";
-import type { CanvasConfig, RenderedElement } from "./commandTypes";
+import type { AnnotationElement, CanvasConfig, RenderedElement } from "./commandTypes";
 
 interface Props {
   canvas: CanvasConfig;
   elements: RenderedElement[];
+  annotations: AnnotationElement[];
 }
 
-export function WhiteboardCanvas({ canvas, elements }: Props) {
+export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
 
@@ -166,6 +167,22 @@ export function WhiteboardCanvas({ canvas, elements }: Props) {
             </text>
           );
         })}
+
+        {/* Annotation overlay — rendered on top of all main content */}
+        <g data-testid="annotation-layer">
+          {annotations.map((ann) => (
+            <polyline
+              key={ann.id}
+              points={ann.currentPoints.map(([x, y]) => `${x},${y}`).join(" ")}
+              fill="none"
+              stroke={ann.color}
+              strokeWidth={ann.width}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              data-testid={`annotation-${ann.id}`}
+            />
+          ))}
+        </g>
       </svg>
     </div>
   );

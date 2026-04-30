@@ -82,6 +82,48 @@ export interface ClearCanvasCommand {
   narration?: string;
 }
 
+// --- Annotation layer commands ---
+
+export interface AnnotateUnderlineCommand {
+  type: "annotate_underline";
+  id: string;
+  /** Start point x */
+  x1: number;
+  /** Start point y */
+  y1: number;
+  /** End point x */
+  x2: number;
+  /** End point y */
+  y2: number;
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface AnnotateCircleCommand {
+  type: "annotate_circle";
+  id: string;
+  /** Ellipse center x */
+  cx: number;
+  /** Ellipse center y */
+  cy: number;
+  /** Horizontal radius */
+  rx: number;
+  /** Vertical radius */
+  ry: number;
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface ClearAnnotationsCommand {
+  type: "clear_annotations";
+  duration?: number;
+  narration?: string;
+}
+
 export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
@@ -90,7 +132,10 @@ export type WhiteboardCommand =
   | DrawPathCommand
   | EraseObjectCommand
   | EraseAreaCommand
-  | ClearCanvasCommand;
+  | ClearCanvasCommand
+  | AnnotateUnderlineCommand
+  | AnnotateCircleCommand
+  | ClearAnnotationsCommand;
 
 export interface CanvasConfig {
   width: number;
@@ -154,6 +199,18 @@ export type RenderedElement =
       radius: number;
       color: string;
     };
+
+/** A single element on the annotation overlay layer. */
+export interface AnnotationElement {
+  kind: "annotation";
+  id: string;
+  /** Full generated hand-drawn path points */
+  points: [number, number][];
+  /** Incrementally revealed points during animation */
+  currentPoints: [number, number][];
+  color: string;
+  width: number;
+}
 
 // Result of script validation
 export interface ValidationResult {
@@ -486,6 +543,86 @@ function validateCommand(
     };
   }
 
+  if (type === "annotate_underline") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (annotate_underline) 缺少 id。` };
+    if (
+      typeof o.x1 !== "number" ||
+      typeof o.y1 !== "number" ||
+      typeof o.x2 !== "number" ||
+      typeof o.y2 !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (annotate_underline) x1/y1/x2/y2 必须是数字。`,
+      };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (annotate_underline) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "annotate_underline",
+        id: o.id,
+        x1: o.x1,
+        y1: o.y1,
+        x2: o.x2,
+        y2: o.y2,
+        color: typeof o.color === "string" ? o.color : "#f59e0b",
+        width: typeof o.width === "number" ? o.width : 4,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "annotate_circle") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (annotate_circle) 缺少 id。` };
+    if (
+      typeof o.cx !== "number" ||
+      typeof o.cy !== "number" ||
+      typeof o.rx !== "number" ||
+      typeof o.ry !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (annotate_circle) cx/cy/rx/ry 必须是数字。`,
+      };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (annotate_circle) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "annotate_circle",
+        id: o.id,
+        cx: o.cx,
+        cy: o.cy,
+        rx: o.rx,
+        ry: o.ry,
+        color: typeof o.color === "string" ? o.color : "#ef4444",
+        width: typeof o.width === "number" ? o.width : 3,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "clear_annotations") {
+    if (o.duration !== undefined && typeof o.duration !== "number")
+      return {
+        ok: false,
+        error: `${where} (clear_annotations) duration 必须是数字。`,
+      };
+    return {
+      ok: true,
+      command: {
+        type: "clear_annotations",
+        duration: typeof o.duration === "number" ? o.duration : 300,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   return { ok: false, error: `${where} 不支持的命令类型: "${type}"。` };
 }
 
@@ -515,6 +652,15 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "set_canvas") {
     return `设置画布 ${cmd.width}×${cmd.height}`;
+  }
+  if (cmd.type === "annotate_underline") {
+    return `批注下划线 (${cmd.x1},${cmd.y1}) → (${cmd.x2},${cmd.y2})`;
+  }
+  if (cmd.type === "annotate_circle") {
+    return `批注圈画 圆心(${cmd.cx},${cmd.cy}) rx=${cmd.rx} ry=${cmd.ry}`;
+  }
+  if (cmd.type === "clear_annotations") {
+    return "清除批注图层";
   }
   return "未知命令";
 }
