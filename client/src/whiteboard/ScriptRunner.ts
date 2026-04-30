@@ -16,7 +16,7 @@ export interface RunnerCallbacks {
   onStepChange: (currentIndex: number, total: number) => void;
   // Push the full narration string for the upcoming command. The UI is
   // responsible for animating its appearance (typewriter). null clears it.
-  onNarrationChange: (narration: string | null, targetDurationMs?: number) => void;
+  onNarrationChange: (narration: string | null, targetDurationMs?: number) => void | Promise<void>;
   onWaitChange: (wait: WaitState | null) => void;
   onComplete: () => void;
   onError: (message: string) => void;
@@ -24,7 +24,6 @@ export interface RunnerCallbacks {
 
 export interface RunnerOptions {
   playbackSpeed?: number;
-  commandDurationsMs?: WeakMap<WhiteboardCommand, number>;
 }
 
 export interface WaitState {
@@ -40,7 +39,6 @@ export class ScriptRunner {
   private annotations: AnnotationElement[] = [];
   private canvas: CanvasConfig;
   private playbackSpeed: number;
-  private commandDurationsMs?: WeakMap<WhiteboardCommand, number>;
   private waitResolver: (() => void) | null = null;
 
   constructor(script: WhiteboardScript, cb: RunnerCallbacks, options: RunnerOptions = {}) {
@@ -48,7 +46,6 @@ export class ScriptRunner {
     this.cb = cb;
     this.canvas = script.canvas;
     this.playbackSpeed = this.normalizePlaybackSpeed(options.playbackSpeed);
-    this.commandDurationsMs = options.commandDurationsMs;
   }
 
   cancel() {
@@ -107,9 +104,12 @@ export class ScriptRunner {
           cmd.type === "clear_annotations"
             ? (cmd.narration ?? null)
             : null;
-        // Always push (even null) so the bar updates between steps.
-        this.cb.onNarrationChange(narration, this.estimateCommandDuration(cmd));
-        await this.runCommand(cmd);
+        // Always push (even null) so the bar updates between steps. Narration
+        // and whiteboard movement start together; the next step waits for both.
+        const narrationDone = Promise.resolve(
+          this.cb.onNarrationChange(narration, this.estimateCommandDuration(cmd)),
+        );
+        await Promise.all([this.runCommand(cmd), narrationDone]);
       }
       if (this.cancelled) return;
       this.cb.onStepChange(total, total);
@@ -135,32 +135,24 @@ export class ScriptRunner {
       : 1;
   }
 
-  private durationFor(duration: number, cmd?: WhiteboardCommand) {
-    const commandDuration = cmd ? this.commandDurationsMs?.get(cmd) : undefined;
-    if (typeof commandDuration === "number" && Number.isFinite(commandDuration)) {
-      return Math.max(commandDuration, 1);
-    }
+  private durationFor(duration: number) {
     return Math.max(duration / this.playbackSpeed, 1);
   }
 
   private estimateCommandDuration(cmd: WhiteboardCommand) {
-    const commandDuration = this.commandDurationsMs?.get(cmd);
-    if (typeof commandDuration === "number" && Number.isFinite(commandDuration)) {
-      return Math.max(commandDuration, 1);
-    }
     if ("duration" in cmd && typeof cmd.duration === "number") {
-      return this.durationFor(cmd.duration, cmd);
+      return this.durationFor(cmd.duration);
     }
     return undefined;
   }
 
-  private wait(duration = 0, cmd?: WhiteboardCommand) {
+  private wait(duration = 0) {
     return new Promise<void>((resolve) => {
       if (duration <= 0 || this.cancelled) {
         resolve();
         return;
       }
-      window.setTimeout(resolve, this.durationFor(duration, cmd));
+      window.setTimeout(resolve, this.durationFor(duration));
     });
   }
 
@@ -236,7 +228,7 @@ export class ScriptRunner {
         resolve();
         return;
       }
-      const duration = this.durationFor(cmd.duration, cmd);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -281,7 +273,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = this.durationFor(cmd.duration, cmd);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -332,7 +324,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = this.durationFor(cmd.duration, cmd);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -393,7 +385,7 @@ export class ScriptRunner {
         return;
       }
 
-      const duration = this.durationFor(cmd.duration, cmd);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -455,7 +447,7 @@ export class ScriptRunner {
     const targetIds = new Set(cmd.targetIds ?? []);
     this.elements = this.elements.filter((el) => !targetIds.has(el.id));
     this.commit();
-    await this.wait(cmd.duration ?? 300, cmd);
+    await this.wait(cmd.duration ?? 300);
   }
 
   private async eraseArea(
@@ -474,7 +466,7 @@ export class ScriptRunner {
       color: this.canvas.background,
     });
     this.commit();
-    await this.wait(cmd.duration ?? 300, cmd);
+    await this.wait(cmd.duration ?? 300);
   }
 
   private async clearCanvas(
@@ -488,7 +480,7 @@ export class ScriptRunner {
     }
     this.commit();
     this.commitAnnotations();
-    await this.wait(cmd.duration ?? 300, cmd);
+    await this.wait(cmd.duration ?? 300);
   }
 
   private waitForUser(cmd: Extract<WhiteboardCommand, { type: "wait" }>) {
@@ -601,7 +593,6 @@ export class ScriptRunner {
     color: string,
     width: number,
     duration: number,
-    cmd: WhiteboardCommand,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
       const annIndex = this.annotations.length;
@@ -630,7 +621,7 @@ export class ScriptRunner {
         return;
       }
 
-      const dur = this.durationFor(duration, cmd);
+      const dur = this.durationFor(duration);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -693,7 +684,6 @@ export class ScriptRunner {
       cmd.color ?? "#f59e0b",
       cmd.width ?? 4,
       cmd.duration,
-      cmd,
     );
   }
 
@@ -713,7 +703,6 @@ export class ScriptRunner {
       cmd.color ?? "#ef4444",
       cmd.width ?? 3,
       cmd.duration,
-      cmd,
     );
   }
 
@@ -722,6 +711,6 @@ export class ScriptRunner {
   ) {
     this.annotations = [];
     this.commitAnnotations();
-    await this.wait(cmd.duration ?? 300, cmd);
+    await this.wait(cmd.duration ?? 300);
   }
 }
