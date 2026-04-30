@@ -54,12 +54,43 @@ export interface DrawPathCommand {
   narration?: string;
 }
 
+export interface EraseObjectCommand {
+  type: "erase_object";
+  targetId?: string;
+  targetIds?: string[];
+  duration?: number;
+  narration?: string;
+}
+
+export interface EraseAreaCommand {
+  type: "erase_area";
+  id: string;
+  shape?: "rect" | "circle";
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  radius?: number;
+  duration?: number;
+  narration?: string;
+}
+
+export interface ClearCanvasCommand {
+  type: "clear_canvas";
+  background?: string;
+  duration?: number;
+  narration?: string;
+}
+
 export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
   | DrawLineCommand
   | DrawArrowCommand
-  | DrawPathCommand;
+  | DrawPathCommand
+  | EraseObjectCommand
+  | EraseAreaCommand
+  | ClearCanvasCommand;
 
 export interface CanvasConfig {
   width: number;
@@ -111,6 +142,17 @@ export type RenderedElement =
       currentPoints: [number, number][];
       color: string;
       width: number;
+    }
+  | {
+      kind: "eraser";
+      id: string;
+      shape: "rect" | "circle";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      radius: number;
+      color: string;
     };
 
 // Result of script validation
@@ -337,6 +379,99 @@ function validateCommand(
     };
   }
 
+  if (type === "erase_object") {
+    const targetIds: string[] = [];
+    if (typeof o.targetId === "string") targetIds.push(o.targetId);
+    if (Array.isArray(o.targetIds)) {
+      for (let j = 0; j < o.targetIds.length; j++) {
+        if (typeof o.targetIds[j] !== "string") {
+          return {
+            ok: false,
+            error: `${where} (erase_object) targetIds[${j}] 必须是字符串。`,
+          };
+        }
+        targetIds.push(o.targetIds[j]);
+      }
+    }
+    if (targetIds.length === 0) {
+      return {
+        ok: false,
+        error: `${where} (erase_object) 必须提供 targetId 或 targetIds。`,
+      };
+    }
+    if (o.duration !== undefined && typeof o.duration !== "number")
+      return { ok: false, error: `${where} (erase_object) duration 必须是数字。` };
+    return {
+      ok: true,
+      command: {
+        type: "erase_object",
+        targetIds: Array.from(new Set(targetIds)),
+        duration: typeof o.duration === "number" ? o.duration : 300,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "erase_area") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (erase_area) 缺少 id。` };
+    const shape =
+      o.shape === undefined || o.shape === "rect" || o.shape === "circle"
+        ? (o.shape ?? "rect")
+        : null;
+    if (!shape)
+      return { ok: false, error: `${where} (erase_area) shape 必须是 rect 或 circle。` };
+    if (typeof o.x !== "number" || typeof o.y !== "number")
+      return { ok: false, error: `${where} (erase_area) x / y 必须是数字。` };
+    if (shape === "rect") {
+      if (typeof o.width !== "number" || typeof o.height !== "number") {
+        return {
+          ok: false,
+          error: `${where} (erase_area) rect 需要 width 和 height。`,
+        };
+      }
+    }
+    if (shape === "circle" && typeof o.radius !== "number") {
+      return {
+        ok: false,
+        error: `${where} (erase_area) circle 需要 radius。`,
+      };
+    }
+    if (o.duration !== undefined && typeof o.duration !== "number")
+      return { ok: false, error: `${where} (erase_area) duration 必须是数字。` };
+    return {
+      ok: true,
+      command: {
+        type: "erase_area",
+        id: o.id,
+        shape,
+        x: o.x,
+        y: o.y,
+        width: typeof o.width === "number" ? o.width : undefined,
+        height: typeof o.height === "number" ? o.height : undefined,
+        radius: typeof o.radius === "number" ? o.radius : undefined,
+        duration: typeof o.duration === "number" ? o.duration : 300,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "clear_canvas") {
+    if (o.duration !== undefined && typeof o.duration !== "number")
+      return { ok: false, error: `${where} (clear_canvas) duration 必须是数字。` };
+    if (o.background !== undefined && typeof o.background !== "string")
+      return { ok: false, error: `${where} (clear_canvas) background 必须是字符串。` };
+    return {
+      ok: true,
+      command: {
+        type: "clear_canvas",
+        background: typeof o.background === "string" ? o.background : undefined,
+        duration: typeof o.duration === "number" ? o.duration : 300,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "set_canvas") {
     if (typeof o.width !== "number" || typeof o.height !== "number")
       return { ok: false, error: `${where} (set_canvas) 缺少 width/height。` };
@@ -368,6 +503,15 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "draw_path") {
     return `涂鸦路径 ${cmd.points.length} 个点`;
+  }
+  if (cmd.type === "erase_object") {
+    return `删除对象 ${(cmd.targetIds ?? []).join(", ")}`;
+  }
+  if (cmd.type === "erase_area") {
+    return `局部擦除 ${cmd.shape ?? "rect"}`;
+  }
+  if (cmd.type === "clear_canvas") {
+    return "清空画布";
   }
   if (cmd.type === "set_canvas") {
     return `设置画布 ${cmd.width}×${cmd.height}`;
