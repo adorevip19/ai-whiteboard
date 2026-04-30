@@ -1,4 +1,4 @@
-// Built-in sample script demonstrating write_text, draw_line, draw_path, and narration.
+// Built-in sample script demonstrating write_text, draw_line, draw_arrow, draw_path, and narration.
 import type { WhiteboardScript } from "./commandTypes";
 
 export const sampleScript: WhiteboardScript = {
@@ -56,6 +56,18 @@ export const sampleScript: WhiteboardScript = {
       width: 5,
       duration: 1200,
       narration: "现在我用一条自由路径,演示脚本也可以控制手绘涂鸦。",
+    },
+    {
+      type: "draw_arrow",
+      id: "focus-arrow",
+      from: [720, 250],
+      to: [590, 445],
+      color: "#16a34a",
+      width: 4,
+      headSize: 18,
+      headAngle: 30,
+      duration: 900,
+      narration: "这支绿色箭头指向接下来要观察的直角三角形。",
     },
     {
       type: "write_text",
