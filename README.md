@@ -12,7 +12,7 @@
 - **erase_object / erase_area / clear_canvas** — 删除对象、局部擦除或清空整张画布
 - **annotate_underline / annotate_circle / clear_annotations** — 在独立批注图层划重点，并可一键清除
 - **wait** — 在关键节点暂停，等待用户点击“下一步”后继续
-- **Azure TTS** — 可用 Microsoft Azure Speech 朗读 `narration` 旁白，并按播放器速度同步
+- **Azure TTS** — 可用 Microsoft Azure Speech 朗读 `narration` 旁白；每段旁白和对应白板动作同时开始，下一段会等二者都完成后再继续
 - 顺序执行 commands 数组，实时显示当前步骤
 - JSON 格式错误、未知命令、缺字段都有明确提示
 
