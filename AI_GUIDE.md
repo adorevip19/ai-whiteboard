@@ -1,9 +1,9 @@
-# AI 调用指南 · AI Whiteboard v1.1
+# AI 调用指南 · AI Whiteboard v1.2
 
 > 本文档专为 AI（LLM）阅读。读完后你应当能够仅凭"用户的口头需求"产出符合规范的 JSON 命令脚本，
 > 粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
 
-**v1.1 更新**：每条命令新增可选 `narration` 字段，作为「老师讲课」的旁白字幕，与绘制动作同步显示。
+**v1.2 更新**：新增 `draw_path` 命令。AI 可以用一组连续坐标点控制任意路径涂鸦，并为笔迹设置颜色、粗细和动画时长。
 
 ---
 
@@ -89,10 +89,42 @@
 }
 ```
 
-线段从 `from` 平滑延伸到 `to`，像手在画。要画**多边形**就用多条 `draw_line` 串起来；
-没有 `draw_rect` / `draw_circle` —— v1 仅支持文字与直线。
+线段从 `from` 平滑延伸到 `to`，像手在画。要画**多边形**就用多条 `draw_line` 串起来。
 
-### 3.3 `set_canvas` — 中途调整画布（可选）
+### 3.3 `draw_path` — 任意路径涂鸦（手绘笔迹）
+
+```jsonc
+{
+  "type": "draw_path",
+  "id": "doodle_1",             // 必填，唯一字符串 id
+  "points": [                   // 必填，至少两个 [x, y] 点
+    [120, 220],
+    [160, 190],
+    [210, 245],
+    [260, 200]
+  ],
+  "color": "#ef4444",           // 可选，笔迹颜色，默认 "#111111"
+  "width": 5,                   // 可选，笔迹粗细（px），默认 2
+  "duration": 1200,             // 必填，动画时长（毫秒）
+  "narration": "我用一条自由曲线勾勒出重点区域。" // 可选，本步对应的旁白字幕
+}
+```
+
+`draw_path` 会把 `points` 按顺序连成一条连续笔迹，并按照路径总长度匀速展开。
+它适合自由涂鸦、手绘曲线、圈画重点、波浪线、草图轮廓和不规则形状。
+
+**points 建议**：
+- 至少 2 个点；点越多，路径越细腻。
+- 简单曲线通常 5–12 个点足够；复杂轮廓可用 20–60 个点。
+- 点的顺序就是笔的移动顺序，不要来回乱跳，除非你想制造折线效果。
+- 所有点都应落在画布范围内。
+
+**笔迹建议**：
+- `width: 2–4` 适合细线说明；
+- `width: 5–8` 适合重点圈画或老师板书式涂鸦；
+- 用 `color` 区分用途，例如蓝色解释结构、红色圈重点、绿色表示正确路径。
+
+### 3.4 `set_canvas` — 中途调整画布（可选）
 
 可在 `commands` 中再次出现，运行时改变画布尺寸/背景。一般用不上 ——
 统一在顶层 `canvas` 里设置即可。
@@ -103,9 +135,9 @@
 
 ---
 
-## 3.5 旁白字段 `narration` 详解（v1.1 新增）
+## 3.5 旁白字段 `narration` 详解
 
-这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` 命令都加上 `narration`**。
+这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` / `draw_path` 命令都加上 `narration`**。
 
 ### 行为
 
@@ -173,6 +205,20 @@
 }
 ```
 
+### 示例 C — 自由路径涂鸦（带旁白）
+
+```json
+{
+  "canvas": { "width": 1000, "height": 600, "background": "#ffffff" },
+  "commands": [
+    { "type": "write_text", "id": "title", "text": "用路径圈出重点", "x": 80, "y": 90, "fontSize": 40, "color": "#111111", "duration": 900, "narration": "这一页演示如何用脚本控制自由涂鸦。" },
+    { "type": "write_text", "id": "key", "text": "关键结论", "x": 360, "y": 300, "fontSize": 42, "color": "#111111", "duration": 900, "narration": "我们先写出需要强调的重点。" },
+    { "type": "draw_path", "id": "circle-key", "points": [[325,245],[405,215],[535,225],[610,285],[560,345],[410,360],[315,315],[325,245]], "color": "#ef4444", "width": 6, "duration": 1500, "narration": "接着用红色粗线,沿着这些坐标点把重点圈起来。" },
+    { "type": "draw_path", "id": "wave-note", "points": [[330,385],[370,405],[410,385],[450,405],[490,385],[530,405],[570,385]], "color": "#2563eb", "width": 4, "duration": 1000, "narration": "还可以画一条波浪线,像老师手写标注一样自然。" }
+  ]
+}
+```
+
 ---
 
 ## 5. 排版与构图准则
@@ -208,19 +254,20 @@
 - 整体不是合法 JSON 对象 → "JSON 解析失败"
 - 缺少 `canvas` 或 `commands` → "缺少 canvas 配置 / commands 必须是数组"
 - 命令缺少必填字段 → 例如 "第 N 个命令 (write_text) 缺少 fontSize"
-- `type` 不在 `{set_canvas, write_text, draw_line}` 之内 → "不支持的命令类型"
+- `type` 不在 `{set_canvas, write_text, draw_line, draw_path}` 之内 → "不支持的命令类型"
 - `from` / `to` 不是 `[number, number]` → "from 必须是 [x, y] 数字数组"
+- `draw_path.points` 少于 2 个点，或点不是 `[number, number]` → 对应位置会报错
 - `duration` 不是数字 → 命令缺 duration 报错；建议 ≥200
 
-**v1.1 不支持** 的特性，请不要尝试生成：
-- `draw_rect` / `draw_circle` / `draw_path` / `draw_arrow`
+**v1.2 不支持** 的特性，请不要尝试生成：
+- `draw_rect` / `draw_circle` / `draw_arrow`
 - 图片、SVG path、贝塞尔曲线
 - 修改/删除/移动已绘制元素
 - 等待/延时命令、并行播放、循环
 - 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
 - 多人协作、保存/加载
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；箭头 → 主线 + 两条短斜线。
+如果用户需要矩形 → 用 4 条 `draw_line` 拼出；箭头 → 主线 + 两条短斜线；自由曲线/圈画/涂鸦 → 用 `draw_path`。
 
 ---
 
@@ -243,11 +290,12 @@
 - [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
 - [ ] 顶层有 `canvas` 与 `commands`
 - [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, set_canvas}`
+- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_path, set_canvas}`
 - [ ] 每个命令都有合法 `id`（字符串）和 `duration`（数字 ≥ 1）
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
+- [ ] `draw_path.points` 至少包含两个合法坐标点，且顺序符合笔迹移动方向
 - [ ] 文字按估算宽度不会溢出画布
 - [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
-- [ ] **大部分** `write_text` / `draw_line` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
+- [ ] **大部分** `write_text` / `draw_line` / `draw_path` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
 
 通过以上 9 项 → 输出。
