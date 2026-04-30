@@ -67,6 +67,50 @@ export function WhiteboardCanvas({ canvas, elements }: Props) {
               />
             );
           }
+          if (el.kind === "arrow") {
+            const [x1, y1] = el.from;
+            const [x2, y2] = el.currentEnd;
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const length = Math.hypot(dx, dy);
+            const angle = (el.headAngle * Math.PI) / 180;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const ux = length > 0 ? dx / length : 0;
+            const uy = length > 0 ? dy / length : 0;
+            const left: [number, number] = [
+              x2 - el.headSize * (ux * cos - uy * sin),
+              y2 - el.headSize * (uy * cos + ux * sin),
+            ];
+            const right: [number, number] = [
+              x2 - el.headSize * (ux * cos + uy * sin),
+              y2 - el.headSize * (uy * cos - ux * sin),
+            ];
+
+            return (
+              <g key={el.id} data-testid={`arrow-${el.id}`}>
+                <line
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  stroke={el.color}
+                  strokeWidth={el.width}
+                  strokeLinecap="round"
+                />
+                {length > 0 ? (
+                  <polyline
+                    points={`${left[0]},${left[1]} ${x2},${y2} ${right[0]},${right[1]}`}
+                    fill="none"
+                    stroke={el.color}
+                    strokeWidth={el.width}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ) : null}
+              </g>
+            );
+          }
           if (el.kind === "path") {
             return (
               <polyline
