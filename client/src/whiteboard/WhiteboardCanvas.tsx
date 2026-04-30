@@ -125,6 +125,31 @@ export function WhiteboardCanvas({ canvas, elements }: Props) {
               />
             );
           }
+          if (el.kind === "eraser") {
+            if (el.shape === "circle") {
+              return (
+                <circle
+                  key={el.id}
+                  cx={el.x}
+                  cy={el.y}
+                  r={el.radius}
+                  fill={el.color}
+                  data-testid={`eraser-${el.id}`}
+                />
+              );
+            }
+            return (
+              <rect
+                key={el.id}
+                x={el.x}
+                y={el.y}
+                width={el.width}
+                height={el.height}
+                fill={el.color}
+                data-testid={`eraser-${el.id}`}
+              />
+            );
+          }
           // text
           return (
             <text
