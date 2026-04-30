@@ -35,6 +35,7 @@ type RunStatus = "idle" | "preparing" | "running" | "done" | "error";
 type CachedTtsAudio = {
   url: string;
   blob: Blob;
+  durationMs: number;
 };
 
 function getNarrationFromCommand(cmd: WhiteboardCommand) {
@@ -45,6 +46,10 @@ function getNarrationFromCommand(cmd: WhiteboardCommand) {
 
 function getTtsCacheKey(text: string) {
   return text;
+}
+
+function clampVoiceSpeed(speed: number) {
+  return Math.max(0.5, Math.min(speed, 2));
 }
 
 export default function WhiteboardPage() {
@@ -58,7 +63,6 @@ export default function WhiteboardPage() {
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [activeCommands, setActiveCommands] = useState<WhiteboardCommand[]>([]);
   const [narration, setNarration] = useState<string | null>(null);
-  const [narrationDurationMs, setNarrationDurationMs] = useState<number | null>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(0.75);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [ttsStatus, setTtsStatus] = useState<string>("TTS 未开启");
@@ -66,6 +70,7 @@ export default function WhiteboardPage() {
 
   const runnerRef = useRef<ScriptRunner | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackSpeedRef = useRef(playbackSpeed);
   const ttsRequestIdRef = useRef(0);
   const ttsCacheRef = useRef<Map<string, CachedTtsAudio>>(new Map());
   const ttsPrefetchControllerRef = useRef<AbortController | null>(null);
@@ -84,6 +89,7 @@ export default function WhiteboardPage() {
   }, []);
 
   useEffect(() => {
+    playbackSpeedRef.current = playbackSpeed;
     runnerRef.current?.setPlaybackSpeed(playbackSpeed);
   }, [playbackSpeed]);
 
@@ -107,22 +113,12 @@ export default function WhiteboardPage() {
       return;
     }
 
-    const targetDurationMs = narrationDurationMs ?? undefined;
     const audio = new Audio(cached.url);
     audioRef.current = audio;
 
     const playAudio = () => {
       if (requestId !== ttsRequestIdRef.current) return;
-      if (
-        targetDurationMs &&
-        Number.isFinite(audio.duration) &&
-        audio.duration > 0
-      ) {
-        const fitRate = (audio.duration * 1000) / targetDurationMs;
-        audio.playbackRate = Math.max(0.5, Math.min(fitRate, 2));
-      } else {
-        audio.playbackRate = Math.max(0.5, Math.min(playbackSpeed, 2));
-      }
+      audio.playbackRate = clampVoiceSpeed(playbackSpeedRef.current);
       void audio.play().then(
         () => setTtsStatus("语音播放中"),
         () => setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS"),
@@ -137,7 +133,7 @@ export default function WhiteboardPage() {
     audio.onended = () => {
       if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
     };
-  }, [narration, narrationDurationMs, playbackSpeed, ttsEnabled]);
+  }, [narration, ttsEnabled]);
 
   const synthesizeNarration = async (
     text: string,
@@ -158,12 +154,44 @@ export default function WhiteboardPage() {
       throw new Error(body?.message ?? `TTS 请求失败：${response.status}`);
     }
     const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const durationMs = await loadAudioDurationMs(url);
     const audio = {
       blob,
-      url: URL.createObjectURL(blob),
+      durationMs,
+      url,
     };
     ttsCacheRef.current.set(cacheKey, audio);
     return audio;
+  };
+
+  const loadAudioDurationMs = (url: string) =>
+    new Promise<number>((resolve, reject) => {
+      const audio = new Audio(url);
+      audio.preload = "metadata";
+      audio.onloadedmetadata = () => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          resolve(audio.duration * 1000);
+        } else {
+          reject(new Error("无法读取语音时长。"));
+        }
+      };
+      audio.onerror = () => reject(new Error("无法读取语音时长。"));
+    });
+
+  const buildVoiceAlignedDurations = (commands: WhiteboardCommand[]) => {
+    const durations = new WeakMap<WhiteboardCommand, number>();
+    const voiceSpeed = clampVoiceSpeed(playbackSpeed);
+    commands.forEach((cmd) => {
+      const commandNarration = getNarrationFromCommand(cmd);
+      const cached = commandNarration
+        ? ttsCacheRef.current.get(getTtsCacheKey(commandNarration))
+        : null;
+      if (cached) {
+        durations.set(cmd, cached.durationMs / voiceSpeed);
+      }
+    });
+    return durations;
   };
 
   const prefetchNarrations = async (commands: WhiteboardCommand[]) => {
@@ -234,6 +262,9 @@ export default function WhiteboardPage() {
     if (!ttsReady) {
       return;
     }
+    const commandDurationsMs = ttsEnabled
+      ? buildVoiceAlignedDurations(result.script.commands)
+      : undefined;
 
     // Reset state for a fresh run.
     setActiveCommands(result.script.commands);
@@ -254,9 +285,8 @@ export default function WhiteboardPage() {
         setStepIndex(i);
         setStepTotal(total);
       },
-      onNarrationChange: (n, targetDurationMs) => {
+      onNarrationChange: (n) => {
         setNarration(n);
-        setNarrationDurationMs(targetDurationMs ?? null);
       },
       onWaitChange: (wait) => setWaitState(wait),
       onComplete: () => {
@@ -267,7 +297,7 @@ export default function WhiteboardPage() {
         setErrorMsg(msg);
         setStatus("error");
       },
-    }, { playbackSpeed });
+    }, { playbackSpeed, commandDurationsMs });
     runnerRef.current = runner;
     void runner.run();
   };
@@ -294,7 +324,6 @@ export default function WhiteboardPage() {
     setErrorMsg("");
     setActiveCommands([]);
     setNarration(null);
-    setNarrationDurationMs(null);
     setWaitState(null);
   };
 
@@ -415,12 +444,13 @@ export default function WhiteboardPage() {
           <div className="space-y-3 border-b px-4 py-3">
             <div className="flex items-center gap-3">
               <Gauge className="h-4 w-4 text-muted-foreground" />
-              <div className="min-w-[64px] text-xs font-medium">播放速度</div>
+              <div className="min-w-[64px] text-xs font-medium">语音速度</div>
               <Slider
                 value={[playbackSpeed]}
                 min={0.5}
                 max={1.5}
                 step={0.05}
+                disabled={status === "running" || status === "preparing"}
                 onValueChange={(value) => setPlaybackSpeed(value[0] ?? 0.75)}
                 className="flex-1"
                 data-testid="slider-playback-speed"
