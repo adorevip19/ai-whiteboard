@@ -31,6 +31,19 @@ export interface DrawLineCommand {
   narration?: string;
 }
 
+export interface DrawArrowCommand {
+  type: "draw_arrow";
+  id: string;
+  from: [number, number];
+  to: [number, number];
+  color?: string;
+  width?: number;
+  headSize?: number;
+  headAngle?: number;
+  duration: number;
+  narration?: string;
+}
+
 export interface DrawPathCommand {
   type: "draw_path";
   id: string;
@@ -45,6 +58,7 @@ export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
   | DrawLineCommand
+  | DrawArrowCommand
   | DrawPathCommand;
 
 export interface CanvasConfig {
@@ -78,6 +92,17 @@ export type RenderedElement =
       currentEnd: [number, number];
       color: string;
       width: number;
+    }
+  | {
+      kind: "arrow";
+      id: string;
+      from: [number, number];
+      to: [number, number];
+      currentEnd: [number, number];
+      color: string;
+      width: number;
+      headSize: number;
+      headAngle: number;
     }
   | {
       kind: "path";
@@ -221,6 +246,54 @@ function validateCommand(
     };
   }
 
+  if (type === "draw_arrow") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_arrow) 缺少 id。` };
+    if (
+      !Array.isArray(o.from) ||
+      o.from.length !== 2 ||
+      typeof o.from[0] !== "number" ||
+      typeof o.from[1] !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_arrow) from 必须是 [x, y] 数字数组。`,
+      };
+    if (
+      !Array.isArray(o.to) ||
+      o.to.length !== 2 ||
+      typeof o.to[0] !== "number" ||
+      typeof o.to[1] !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_arrow) to 必须是 [x, y] 数字数组。`,
+      };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_arrow) 缺少 duration。` };
+    if (o.headSize !== undefined && typeof o.headSize !== "number")
+      return { ok: false, error: `${where} (draw_arrow) headSize 必须是数字。` };
+    if (o.headAngle !== undefined && typeof o.headAngle !== "number")
+      return { ok: false, error: `${where} (draw_arrow) headAngle 必须是数字。` };
+    const width = typeof o.width === "number" ? o.width : 2;
+    return {
+      ok: true,
+      command: {
+        type: "draw_arrow",
+        id: o.id,
+        from: [o.from[0], o.from[1]],
+        to: [o.to[0], o.to[1]],
+        color: typeof o.color === "string" ? o.color : "#111111",
+        width,
+        headSize:
+          typeof o.headSize === "number" ? o.headSize : Math.max(width * 4, 12),
+        headAngle: typeof o.headAngle === "number" ? o.headAngle : 28,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "draw_path") {
     if (typeof o.id !== "string")
       return { ok: false, error: `${where} (draw_path) 缺少 id。` };
@@ -289,6 +362,9 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "draw_line") {
     return `画线 (${cmd.from[0]},${cmd.from[1]}) → (${cmd.to[0]},${cmd.to[1]})`;
+  }
+  if (cmd.type === "draw_arrow") {
+    return `画箭头 (${cmd.from[0]},${cmd.from[1]}) → (${cmd.to[0]},${cmd.to[1]})`;
   }
   if (cmd.type === "draw_path") {
     return `涂鸦路径 ${cmd.points.length} 个点`;
