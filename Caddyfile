@@ -1,0 +1,13 @@
+# Caddy serves the built static SPA on Railway.
+# $PORT is provided by Railway at runtime.
+:{$PORT:8080} {
+	root * dist/public
+	encode gzip
+	file_server
+	# SPA fallback: any unknown route → index.html so client-side routing works.
+	try_files {path} /index.html
+	# Cache static assets aggressively, but keep index.html fresh.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	header /index.html Cache-Control "no-cache"
+}

@@ -1,0 +1,15 @@
+# Railway / Nixpacks build plan for the AI Whiteboard static site.
+# We only need the client bundle; Caddy serves dist/public at runtime.
+
+[phases.setup]
+nixPkgs = ["nodejs_20", "caddy"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+# Frontend-only build → outputs to dist/public.
+cmds = ["npm run build:client"]
+
+[start]
+cmd = "caddy run --config Caddyfile --adapter caddyfile"
