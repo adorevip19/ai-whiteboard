@@ -29,13 +29,13 @@ npm run build:client # 仅构建前端到 dist/public
 
 ## 在 Railway 部署
 
-仓库已包含 `railway.json`、`nixpacks.toml`、`Caddyfile`。在 Railway 上：
+仓库已包含 `railway.json`与 `Staticfile`，使用 **Railpack** 构建器（Railway 当前默认，比 Nixpacks 更稳定）。在 Railway 上：
 
 1. **New Project → Deploy from GitHub repo**，选择本仓库
-2. Railway 自动识别 Nixpacks 配置：安装 Node 20 + Caddy → `npm ci` → `npm run build:client` → 启动 Caddy
+2. Railpack 自动检测项目：安装 Node 依赖 → `npm run build:client` → 识别为静态站点（`Staticfile` 指向 `dist/public`）→ 自动启动 Caddy 托管
 3. 部署完成后在 **Settings → Networking → Generate Domain** 获取公开 URL
 
-不需要任何环境变量。`$PORT` 由 Railway 自动注入，Caddyfile 已配置读取。
+不需要任何环境变量。`$PORT` 与 SPA fallback 都由 Railpack 自动处理。
 
 ## 项目结构
 
