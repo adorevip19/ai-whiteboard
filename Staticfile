@@ -1,5 +1,0 @@
-# Railpack static site configuration
-# - root points at Vite's build output
-# - index_fallback enables SPA routing (unknown paths → index.html)
-root: dist/public
-index_fallback: true
