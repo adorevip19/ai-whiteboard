@@ -1,9 +1,9 @@
-# AI 调用指南 · AI Whiteboard v1.2
+# AI 调用指南 · AI Whiteboard v1.3
 
 > 本文档专为 AI（LLM）阅读。读完后你应当能够仅凭"用户的口头需求"产出符合规范的 JSON 命令脚本，
 > 粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
 
-**v1.2 更新**：新增 `draw_path` 命令。AI 可以用一组连续坐标点控制任意路径涂鸦，并为笔迹设置颜色、粗细和动画时长。
+**v1.3 更新**：新增 `draw_arrow` 命令。AI 可以直接用箭尾 `from` 和箭头尖端 `to` 表达方向、流程、因果与指向关系，并设置颜色、粗细、头部大小和张开角度。
 
 ---
 
@@ -91,7 +91,34 @@
 
 线段从 `from` 平滑延伸到 `to`，像手在画。要画**多边形**就用多条 `draw_line` 串起来。
 
-### 3.3 `draw_path` — 任意路径涂鸦（手绘笔迹）
+### 3.3 `draw_arrow` — 画箭头（方向/流程/因果）
+
+```jsonc
+{
+  "type": "draw_arrow",
+  "id": "arrow_1",         // 必填，唯一字符串 id
+  "from": [220, 260],      // 必填，箭尾坐标 [x, y]
+  "to": [520, 260],        // 必填，箭头尖端坐标 [x, y]
+  "color": "#2563eb",      // 可选，默认 "#111111"
+  "width": 3,              // 可选，线宽（px），默认 2
+  "headSize": 18,          // 可选，箭头头部长度（px），默认 max(width × 4, 12)
+  "headAngle": 28,         // 可选，箭头头部张开角度（度），默认 28
+  "duration": 900,         // 必填，动画时长（毫秒）
+  "narration": "箭头表示数据从输入流向处理步骤。" // 可选，本步对应的旁白字幕
+}
+```
+
+`draw_arrow` 会从 `from` 向 `to` 平滑画出主线，并在 `to` 位置生成箭头头部。
+它适合表达**方向、流程、因果、映射、转移、输入输出关系**。当用户说“指向”“流向”“导致”“传给”“映射到”“下一步”时，优先考虑使用 `draw_arrow`。
+
+**参数语义**：
+- `from` 永远是箭尾，不是起点标签位置；
+- `to` 永远是箭头尖端，表示被指向的位置；
+- `headSize` 越大，箭头头部越长，通常 `12–24` 足够；
+- `headAngle` 越大，箭头越张开，常用 `24–35`；流程图推荐 `28`；
+- 如果只是普通分割线、边框或几何边，请用 `draw_line`，不要滥用箭头。
+
+### 3.4 `draw_path` — 任意路径涂鸦（手绘笔迹）
 
 ```jsonc
 {
@@ -124,7 +151,7 @@
 - `width: 5–8` 适合重点圈画或老师板书式涂鸦；
 - 用 `color` 区分用途，例如蓝色解释结构、红色圈重点、绿色表示正确路径。
 
-### 3.4 `set_canvas` — 中途调整画布（可选）
+### 3.5 `set_canvas` — 中途调整画布（可选）
 
 可在 `commands` 中再次出现，运行时改变画布尺寸/背景。一般用不上 ——
 统一在顶层 `canvas` 里设置即可。
@@ -135,9 +162,9 @@
 
 ---
 
-## 3.5 旁白字段 `narration` 详解
+## 3.6 旁白字段 `narration` 详解
 
-这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` / `draw_path` 命令都加上 `narration`**。
+这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` / `draw_arrow` / `draw_path` 命令都加上 `narration`**。
 
 ### 行为
 
@@ -197,9 +224,9 @@
   "canvas": { "width": 1400, "height": 500, "background": "#ffffff" },
   "commands": [
     { "type": "write_text", "id": "s1", "text": "输入", "x": 120, "y": 260, "fontSize": 28, "duration": 500, "narration": "流程从左侧的输入开始。" },
-    { "type": "draw_line",  "id": "a1", "from": [220, 252], "to": [380, 252], "color": "#2563eb", "width": 3, "duration": 600, "narration": "输入数据流向中间的处理环节。" },
+    { "type": "draw_arrow", "id": "a1", "from": [220, 252], "to": [380, 252], "color": "#2563eb", "width": 3, "headSize": 16, "duration": 600, "narration": "输入数据沿着箭头流向中间的处理环节。" },
     { "type": "write_text", "id": "s2", "text": "处理", "x": 420, "y": 260, "fontSize": 28, "duration": 500, "narration": "在这里完成核心处理逻辑。" },
-    { "type": "draw_line",  "id": "a2", "from": [520, 252], "to": [680, 252], "color": "#2563eb", "width": 3, "duration": 600, "narration": "处理结果再传向下游。" },
+    { "type": "draw_arrow", "id": "a2", "from": [520, 252], "to": [680, 252], "color": "#2563eb", "width": 3, "headSize": 16, "duration": 600, "narration": "处理结果再沿箭头传向下游。" },
     { "type": "write_text", "id": "s3", "text": "输出", "x": 720, "y": 260, "fontSize": 28, "duration": 500, "narration": "最终得到我们想要的输出。" }
   ]
 }
@@ -254,20 +281,21 @@
 - 整体不是合法 JSON 对象 → "JSON 解析失败"
 - 缺少 `canvas` 或 `commands` → "缺少 canvas 配置 / commands 必须是数组"
 - 命令缺少必填字段 → 例如 "第 N 个命令 (write_text) 缺少 fontSize"
-- `type` 不在 `{set_canvas, write_text, draw_line, draw_path}` 之内 → "不支持的命令类型"
+- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path}` 之内 → "不支持的命令类型"
 - `from` / `to` 不是 `[number, number]` → "from 必须是 [x, y] 数字数组"
+- `draw_arrow.headSize` / `draw_arrow.headAngle` 不是数字 → 对应字段会报错
 - `draw_path.points` 少于 2 个点，或点不是 `[number, number]` → 对应位置会报错
 - `duration` 不是数字 → 命令缺 duration 报错；建议 ≥200
 
-**v1.2 不支持** 的特性，请不要尝试生成：
-- `draw_rect` / `draw_circle` / `draw_arrow`
+**v1.3 不支持** 的特性，请不要尝试生成：
+- `draw_rect` / `draw_circle`
 - 图片、SVG path、贝塞尔曲线
 - 修改/删除/移动已绘制元素
 - 等待/延时命令、并行播放、循环
 - 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
 - 多人协作、保存/加载
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；箭头 → 主线 + 两条短斜线；自由曲线/圈画/涂鸦 → 用 `draw_path`。
+如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`。
 
 ---
 
@@ -290,12 +318,13 @@
 - [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
 - [ ] 顶层有 `canvas` 与 `commands`
 - [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_path, set_canvas}`
+- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_arrow, draw_path, set_canvas}`
 - [ ] 每个命令都有合法 `id`（字符串）和 `duration`（数字 ≥ 1）
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
+- [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端，方向没有写反
 - [ ] `draw_path.points` 至少包含两个合法坐标点，且顺序符合笔迹移动方向
 - [ ] 文字按估算宽度不会溢出画布
 - [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
-- [ ] **大部分** `write_text` / `draw_line` / `draw_path` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
+- [ ] **大部分** `write_text` / `draw_line` / `draw_arrow` / `draw_path` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
 
 通过以上 9 项 → 输出。
