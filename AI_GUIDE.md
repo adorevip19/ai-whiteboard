@@ -1,21 +1,18 @@
-# AI 调用指南 · AI Whiteboard v1.3
+# AI 调用指南 · AI Whiteboard v1.4
 
-> 本文档专为 AI（LLM）阅读。读完后你应当能够仅凭"用户的口头需求"产出符合规范的 JSON 命令脚本，
-> 粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
+> 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的“JSON 命令脚本”输入框、点击“运行脚本”即可看到逐步动画 + 旁白讲解。
 
-**v1.3 更新**：新增 `draw_arrow` 命令。AI 可以直接用箭尾 `from` 和箭头尖端 `to` 表达方向、流程、因果与指向关系，并设置颜色、粗细、头部大小和张开角度。
+**v1.4 更新**：新增擦除命令。AI 可以用 `erase_object` 删除完整对象、用 `erase_area` 局部擦除笔迹、用 `clear_canvas` 清空整张画布。
 
 ---
 
 ## 1. 工具定位
 
-你是一个**白板讲师**。用户给你一个主题（例如"讲一下勾股定理"、"画一个流程图"、"写一首诗"），
-你的输出必须是**一个合法的 JSON 对象**，结构严格遵循下面的 Schema。前端会把这个对象按
-`commands` 数组顺序、逐条动画播放出来；同时在画布下方的字幕条里**逐字显示旁白**，营造
-"老师边讲边画"的体验。
+你是一个**白板讲师**。用户给你一个主题，例如“讲一下勾股定理”“画一个流程图”“解释一个概念”，你的输出必须是**一个合法 JSON 对象**，并严格遵循本文 Schema。
 
-**重要：你不要输出任何 Markdown、解释、围栏 ` ``` `；只输出纯 JSON 对象本身**，否则用户必须手动清理。
-所有想说给观众听的话，都写在 `narration` 字段里 —— 不要写在对话里。
+前端会按 `commands` 数组顺序逐条播放命令，同时在画布下方的字幕条里显示 `narration`，营造“老师边讲边画”的体验。
+
+**重要：不要输出 Markdown、解释文字、代码围栏。只输出纯 JSON 对象本身。**
 
 ---
 
@@ -24,224 +21,251 @@
 ```jsonc
 {
   "canvas": {
-    "width": 1200,        // 必填，画布逻辑宽度（像素）
-    "height": 800,        // 必填，画布逻辑高度（像素）
-    "background": "#ffffff" // 可选，默认 "#ffffff"
+    "width": 1200,
+    "height": 800,
+    "background": "#ffffff"
   },
-  "commands": [ /* 命令数组，按顺序串行执行 */ ]
+  "commands": []
 }
 ```
 
-- 画布坐标原点 `(0,0)` 在**左上角**，x 向右、y 向下，单位像素。
-- 画布会自动按比例缩放以适配屏幕，但内部坐标始终按原始 `width × height` 计算 ——
-  你写代码时**不需要考虑缩放**。
-
-### 推荐画布尺寸
-
-| 场景 | width × height |
-|------|----------------|
-| 通用讲解（默认） | 1200 × 800 |
-| 横向流程图 | 1600 × 700 |
-| 长文/列表 | 1000 × 1400 |
-| 紧凑示意 | 900 × 600 |
+- 坐标原点 `(0,0)` 在左上角，x 向右，y 向下，单位为像素。
+- 画布会自动缩放以适配屏幕，但内部坐标始终按 `canvas.width × canvas.height` 计算。
+- 推荐默认尺寸：`1200 × 800`。
+- 横向流程图可用 `1600 × 700`，长文列表可用 `1000 × 1400`。
 
 ---
 
 ## 3. 命令类型
 
-### 3.1 `write_text` — 写字（打字机效果）
+### 3.1 `write_text` — 写字
 
 ```jsonc
 {
   "type": "write_text",
-  "id": "title_1",          // 必填，本次会话内唯一的字符串 id
-  "text": "勾股定理",        // 必填，支持中英文/数字/Emoji/基本符号
-  "x": 100,                 // 必填，文字左下基线 x 坐标（SVG text 锚点）
-  "y": 80,                  // 必填，文字基线 y 坐标
-  "fontSize": 36,           // 必填，字号（px）
-  "color": "#111111",       // 可选，默认 "#111111"
-  "duration": 1200,         // 必填，动画时长（毫秒），文字按字符逐个出现
-  "narration": "我们先把这个定理的名字写出来。"  // 可选，本步对应的旁白字幕
+  "id": "title_1",
+  "text": "勾股定理",
+  "x": 100,
+  "y": 80,
+  "fontSize": 36,
+  "color": "#111111",
+  "duration": 1200,
+  "narration": "我们先把这个定理的名字写出来。"
 }
 ```
 
-**坐标语义**：`(x, y)` 是 SVG `<text>` 元素的**基线锚点**，相当于"该行文字底部的左下角"。
-要让文字顶部出现在 `y0`，请把 `y` 设置为 `y0 + fontSize`。
+- `(x, y)` 是 SVG `<text>` 的文字基线锚点，近似为该行文字左下角。
+- `duration` 是打字动画时长，单位毫秒。
+- 文字较长时要估算宽度，避免超出画布。
 
-**duration 建议**：
-- 短词（≤6 字）：400–800 ms
-- 中等句（≤20 字）：1000–1800 ms
-- 长句：2000–3500 ms
-- 想要"瞬间出现"的标签：仍至少给 200 ms（不可为 0）
-
-### 3.2 `draw_line` — 画线（手绘延伸）
+### 3.2 `draw_line` — 画线
 
 ```jsonc
 {
   "type": "draw_line",
-  "id": "line_1",           // 必填，唯一字符串 id
-  "from": [100, 150],       // 必填，起点 [x, y]
-  "to":   [500, 150],       // 必填，终点 [x, y]
-  "color": "#111111",       // 可选，默认 "#111111"
-  "width": 3,               // 可选，线宽（px），默认 2
-  "duration": 1000,         // 必填，动画时长（毫秒）
-  "narration": "先画一条水平线作为底边。"  // 可选，本步对应的旁白字幕
+  "id": "line_1",
+  "from": [100, 150],
+  "to": [500, 150],
+  "color": "#111111",
+  "width": 3,
+  "duration": 1000,
+  "narration": "先画一条水平线作为底边。"
 }
 ```
 
-线段从 `from` 平滑延伸到 `to`，像手在画。要画**多边形**就用多条 `draw_line` 串起来。
+- `from` 是起点，`to` 是终点。
+- 线段会从起点平滑延伸到终点。
+- 要画矩形或多边形，可以用多条 `draw_line` 拼出。
 
-### 3.3 `draw_arrow` — 画箭头（方向/流程/因果）
+### 3.3 `draw_arrow` — 画箭头
 
 ```jsonc
 {
   "type": "draw_arrow",
-  "id": "arrow_1",         // 必填，唯一字符串 id
-  "from": [220, 260],      // 必填，箭尾坐标 [x, y]
-  "to": [520, 260],        // 必填，箭头尖端坐标 [x, y]
-  "color": "#2563eb",      // 可选，默认 "#111111"
-  "width": 3,              // 可选，线宽（px），默认 2
-  "headSize": 18,          // 可选，箭头头部长度（px），默认 max(width × 4, 12)
-  "headAngle": 28,         // 可选，箭头头部张开角度（度），默认 28
-  "duration": 900,         // 必填，动画时长（毫秒）
-  "narration": "箭头表示数据从输入流向处理步骤。" // 可选，本步对应的旁白字幕
+  "id": "arrow_1",
+  "from": [220, 260],
+  "to": [520, 260],
+  "color": "#2563eb",
+  "width": 3,
+  "headSize": 18,
+  "headAngle": 28,
+  "duration": 900,
+  "narration": "箭头表示数据从输入流向处理步骤。"
 }
 ```
 
-`draw_arrow` 会从 `from` 向 `to` 平滑画出主线，并在 `to` 位置生成箭头头部。
-它适合表达**方向、流程、因果、映射、转移、输入输出关系**。当用户说“指向”“流向”“导致”“传给”“映射到”“下一步”时，优先考虑使用 `draw_arrow`。
+- `from` 永远是箭尾。
+- `to` 永远是箭头尖端，表示被指向的位置。
+- `headSize` 控制箭头头部长度，常用 `12–24`。
+- `headAngle` 控制箭头张角，常用 `24–35`，流程图推荐 `28`。
+- 表达方向、流程、因果、映射、输入输出关系时优先使用 `draw_arrow`。
 
-**参数语义**：
-- `from` 永远是箭尾，不是起点标签位置；
-- `to` 永远是箭头尖端，表示被指向的位置；
-- `headSize` 越大，箭头头部越长，通常 `12–24` 足够；
-- `headAngle` 越大，箭头越张开，常用 `24–35`；流程图推荐 `28`；
-- 如果只是普通分割线、边框或几何边，请用 `draw_line`，不要滥用箭头。
-
-### 3.4 `draw_path` — 任意路径涂鸦（手绘笔迹）
+### 3.4 `draw_path` — 任意路径涂鸦
 
 ```jsonc
 {
   "type": "draw_path",
-  "id": "doodle_1",             // 必填，唯一字符串 id
-  "points": [                   // 必填，至少两个 [x, y] 点
-    [120, 220],
-    [160, 190],
-    [210, 245],
-    [260, 200]
-  ],
-  "color": "#ef4444",           // 可选，笔迹颜色，默认 "#111111"
-  "width": 5,                   // 可选，笔迹粗细（px），默认 2
-  "duration": 1200,             // 必填，动画时长（毫秒）
-  "narration": "我用一条自由曲线勾勒出重点区域。" // 可选，本步对应的旁白字幕
+  "id": "doodle_1",
+  "points": [[120, 220], [160, 190], [210, 245], [260, 200]],
+  "color": "#ef4444",
+  "width": 5,
+  "duration": 1200,
+  "narration": "我用一条自由曲线圈出重点区域。"
 }
 ```
 
-`draw_path` 会把 `points` 按顺序连成一条连续笔迹，并按照路径总长度匀速展开。
-它适合自由涂鸦、手绘曲线、圈画重点、波浪线、草图轮廓和不规则形状。
+- `points` 至少包含两个 `[x, y]` 坐标。
+- 点的顺序就是笔迹移动顺序。
+- 简单曲线通常 5–12 个点即可，复杂轮廓可用 20–60 个点。
+- `width: 2–4` 适合细线说明，`width: 5–8` 适合重点圈画。
 
-**points 建议**：
-- 至少 2 个点；点越多，路径越细腻。
-- 简单曲线通常 5–12 个点足够；复杂轮廓可用 20–60 个点。
-- 点的顺序就是笔的移动顺序，不要来回乱跳，除非你想制造折线效果。
-- 所有点都应落在画布范围内。
+### 3.5 擦除命令
 
-**笔迹建议**：
-- `width: 2–4` 适合细线说明；
-- `width: 5–8` 适合重点圈画或老师板书式涂鸦；
-- 用 `color` 区分用途，例如蓝色解释结构、红色圈重点、绿色表示正确路径。
+擦除分三类：
 
-### 3.5 `set_canvas` — 中途调整画布（可选）
+- 想让某个已绘制元素彻底消失 → 用 `erase_object`。
+- 想像橡皮擦一样擦掉画面的一小块 → 用 `erase_area`。
+- 想整张白板重新开始 → 用 `clear_canvas`。
 
-可在 `commands` 中再次出现，运行时改变画布尺寸/背景。一般用不上 ——
-统一在顶层 `canvas` 里设置即可。
+#### 3.5.1 `erase_object` — 删除已绘制对象
+
+删除单个对象：
+
+```jsonc
+{
+  "type": "erase_object",
+  "targetId": "temp-guide",
+  "duration": 400,
+  "narration": "这条辅助线用完了，现在把它删掉。"
+}
+```
+
+一次删除多个对象：
+
+```jsonc
+{
+  "type": "erase_object",
+  "targetIds": ["old-arrow", "old-label"],
+  "duration": 400,
+  "narration": "我们把旧标注清掉，给下一步留出空间。"
+}
+```
+
+- `targetId` 是之前某条命令创建的 `id`。
+- `targetIds` 用于批量删除。
+- 适合删除临时辅助线、临时标签、旧箭头、旧路径。
+
+#### 3.5.2 `erase_area` — 局部擦除指定位置
+
+矩形擦除：
+
+```jsonc
+{
+  "type": "erase_area",
+  "id": "erase_rect_1",
+  "shape": "rect",
+  "x": 360,
+  "y": 220,
+  "width": 120,
+  "height": 80,
+  "duration": 400,
+  "narration": "只擦掉中间这一块，保留旁边的笔迹。"
+}
+```
+
+圆形擦除：
+
+```jsonc
+{
+  "type": "erase_area",
+  "id": "erase_circle_1",
+  "shape": "circle",
+  "x": 540,
+  "y": 300,
+  "radius": 36,
+  "duration": 400,
+  "narration": "这里用圆形橡皮擦掉一个小范围。"
+}
+```
+
+- `shape` 可为 `rect` 或 `circle`，默认 `rect`。
+- `rect` 使用左上角 `(x, y)` 加 `width` / `height`。
+- `circle` 使用圆心 `(x, y)` 加 `radius`。
+- `erase_area` 会用当前画布背景色覆盖指定区域，视觉上等同橡皮擦。
+- 它不会切分底层线段几何；如果之后删除这个擦除遮罩，被覆盖内容会重新出现。
+- 如果之后改变背景色，旧擦除区域颜色可能与新背景不一致；需要换背景时，优先使用 `clear_canvas`。
+
+#### 3.5.3 `clear_canvas` — 清空整张画布
+
+```jsonc
+{
+  "type": "clear_canvas",
+  "duration": 500,
+  "narration": "现在清空画布，进入下一部分。"
+}
+```
+
+清空并换背景：
+
+```jsonc
+{
+  "type": "clear_canvas",
+  "background": "#f8fafc",
+  "duration": 500,
+  "narration": "我们换一张浅色背景的新白板。"
+}
+```
+
+- `clear_canvas` 会删除当前所有已绘制对象和擦除遮罩。
+- 它保留画布尺寸。
+- 如果提供 `background`，会同时更新背景色。
+
+### 3.6 `set_canvas` — 中途调整画布
 
 ```jsonc
 { "type": "set_canvas", "width": 1600, "height": 900, "background": "#fafafa" }
 ```
 
----
+一般建议在顶层 `canvas` 中一次性设置画布。只有确实需要中途改变尺寸或背景时才使用。
 
-## 3.6 旁白字段 `narration` 详解
+### 3.7 `narration` — 旁白字段
 
-这是让白板"像老师讲课"的关键。**强烈建议为每一条 `write_text` / `draw_line` / `draw_arrow` / `draw_path` 命令都加上 `narration`**。
-
-### 行为
-
-- 命令开始执行的瞬间，对应的 `narration` 出现在画布**下方的字幕条里**；
-- 字幕本身以**打字机方式**逐字出现（约 9 字/秒），与白板上的绘制动画**同时进行**；
-- 字幕保留显示，直到下一条命令到来；最后一条命令的字幕保留到结束；
-- 没有 `narration` 字段 → 该步骤不显示字幕（适合极短的标签）；
-- 字幕不影响命令本身的 `duration` —— 你不需要为旁白额外延长动画时长，但**如果旁白特别长，建议把 `duration` 也调大**让节奏匹配。
-
-### 写作风格
-
-- **第一人称口语**，像真实的老师在说话：「我们先来…」「请大家看…」「这就是…」；
-- **一句话讲一件事**，避免分号和长从句；中文用逗号、句号即可；
-- **长度 8–40 字**最佳；过短显得唐突，过长会被打字机拖慢节奏；
-- **承上启下**：用「首先 / 接着 / 最后」串联步骤，让旁白形成一段完整讲解；
-- **避免重复白板上已经写出的内容**：不要在写「勾股定理」四个字时又念一遍"勾股定理"，
-  改说"我们今天的主角"；
-- **数学/英文公式**用中文读法念出来，例如 `a² + b² = c²` 念作
-  "a 的平方加 b 的平方,等于 c 的平方"。
-
-### 节奏建议
-
-| 命令 duration | 推荐 narration 长度 |
-|--------------|--------------------|
-| 300–600 ms（短标签） | 通常省略，或 6–12 字 |
-| 800–1500 ms | 12–25 字 |
-| 1500–3000 ms | 25–40 字 |
-| > 3000 ms | 多句承接，或拆成两个命令 |
+- 强烈建议大部分绘制/擦除命令都带 `narration`。
+- 旁白应是第一人称口语，像老师在讲课。
+- 一句话讲一件事，推荐 8–40 个中文字符。
+- 旁白会在命令开始时出现，并以打字机效果显示。
+- 如果旁白很长，适当增大该命令的 `duration`，让节奏匹配。
 
 ---
 
 ## 4. 完整示例
 
-### 示例 A — 讲解勾股定理（带旁白）
+### 示例 A — 箭头和局部擦除
 
 ```json
 {
   "canvas": { "width": 1200, "height": 800, "background": "#ffffff" },
   "commands": [
-    { "type": "write_text", "id": "title", "text": "勾股定理", "x": 80, "y": 90, "fontSize": 44, "color": "#111111", "duration": 1000, "narration": "同学们好,今天我们来聊一个最经典的几何定理。" },
-    { "type": "draw_line",  "id": "underline", "from": [80, 110], "to": [320, 110], "color": "#2563eb", "width": 4, "duration": 600, "narration": "先在标题下面画一条蓝色的下划线,作为强调。" },
-    { "type": "draw_line",  "id": "tri-base", "from": [200, 500], "to": [500, 500], "color": "#111111", "width": 3, "duration": 900, "narration": "首先,我画一条水平线,这是直角三角形的底边。" },
-    { "type": "draw_line",  "id": "tri-side", "from": [500, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 900, "narration": "接着向上画一条垂直线,与底边形成直角。" },
-    { "type": "draw_line",  "id": "tri-hyp",  "from": [200, 500], "to": [500, 320], "color": "#111111", "width": 3, "duration": 1100, "narration": "最后连接两端,得到斜边,直角三角形就构成了。" },
-    { "type": "write_text", "id": "label-a", "text": "a", "x": 340, "y": 530, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "底边记作 a。" },
-    { "type": "write_text", "id": "label-b", "text": "b", "x": 520, "y": 420, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "右边的直角边记作 b。" },
-    { "type": "write_text", "id": "label-c", "text": "c", "x": 330, "y": 390, "fontSize": 26, "color": "#2563eb", "duration": 300, "narration": "斜边记作 c。" },
-    { "type": "write_text", "id": "formula", "text": "a² + b² = c²", "x": 80, "y": 660, "fontSize": 36, "color": "#111111", "duration": 1400, "narration": "勾股定理告诉我们:两条直角边的平方之和,等于斜边的平方。" }
+    { "type": "write_text", "id": "title", "text": "因果关系", "x": 80, "y": 90, "fontSize": 44, "color": "#111111", "duration": 900, "narration": "我们先写下今天要看的关系。" },
+    { "type": "write_text", "id": "cause", "text": "输入", "x": 160, "y": 300, "fontSize": 32, "duration": 500, "narration": "左边是输入。" },
+    { "type": "write_text", "id": "effect", "text": "输出", "x": 720, "y": 300, "fontSize": 32, "duration": 500, "narration": "右边是输出。" },
+    { "type": "draw_arrow", "id": "flow", "from": [260, 290], "to": [700, 290], "color": "#2563eb", "width": 4, "headSize": 20, "duration": 900, "narration": "这支箭头表示输入经过处理流向输出。" },
+    { "type": "draw_line", "id": "temp", "from": [420, 230], "to": [520, 350], "color": "#94a3b8", "width": 2, "duration": 400, "narration": "这里先画一条临时辅助线。" },
+    { "type": "erase_object", "targetId": "temp", "duration": 300, "narration": "辅助线用完后，可以按对象直接删除。" },
+    { "type": "erase_area", "id": "trim-arrow", "shape": "circle", "x": 520, "y": 290, "radius": 26, "duration": 300, "narration": "也可以局部擦掉箭头中间的一小段。" }
   ]
 }
 ```
 
-### 示例 B — 三步流程图（带旁白）
-
-```json
-{
-  "canvas": { "width": 1400, "height": 500, "background": "#ffffff" },
-  "commands": [
-    { "type": "write_text", "id": "s1", "text": "输入", "x": 120, "y": 260, "fontSize": 28, "duration": 500, "narration": "流程从左侧的输入开始。" },
-    { "type": "draw_arrow", "id": "a1", "from": [220, 252], "to": [380, 252], "color": "#2563eb", "width": 3, "headSize": 16, "duration": 600, "narration": "输入数据沿着箭头流向中间的处理环节。" },
-    { "type": "write_text", "id": "s2", "text": "处理", "x": 420, "y": 260, "fontSize": 28, "duration": 500, "narration": "在这里完成核心处理逻辑。" },
-    { "type": "draw_arrow", "id": "a2", "from": [520, 252], "to": [680, 252], "color": "#2563eb", "width": 3, "headSize": 16, "duration": 600, "narration": "处理结果再沿箭头传向下游。" },
-    { "type": "write_text", "id": "s3", "text": "输出", "x": 720, "y": 260, "fontSize": 28, "duration": 500, "narration": "最终得到我们想要的输出。" }
-  ]
-}
-```
-
-### 示例 C — 自由路径涂鸦（带旁白）
+### 示例 B — 清空后重新开始
 
 ```json
 {
   "canvas": { "width": 1000, "height": 600, "background": "#ffffff" },
   "commands": [
-    { "type": "write_text", "id": "title", "text": "用路径圈出重点", "x": 80, "y": 90, "fontSize": 40, "color": "#111111", "duration": 900, "narration": "这一页演示如何用脚本控制自由涂鸦。" },
-    { "type": "write_text", "id": "key", "text": "关键结论", "x": 360, "y": 300, "fontSize": 42, "color": "#111111", "duration": 900, "narration": "我们先写出需要强调的重点。" },
-    { "type": "draw_path", "id": "circle-key", "points": [[325,245],[405,215],[535,225],[610,285],[560,345],[410,360],[315,315],[325,245]], "color": "#ef4444", "width": 6, "duration": 1500, "narration": "接着用红色粗线,沿着这些坐标点把重点圈起来。" },
-    { "type": "draw_path", "id": "wave-note", "points": [[330,385],[370,405],[410,385],[450,405],[490,385],[530,405],[570,385]], "color": "#2563eb", "width": 4, "duration": 1000, "narration": "还可以画一条波浪线,像老师手写标注一样自然。" }
+    { "type": "write_text", "id": "draft", "text": "草稿内容", "x": 80, "y": 100, "fontSize": 36, "duration": 700, "narration": "这是第一版草稿。" },
+    { "type": "clear_canvas", "background": "#f8fafc", "duration": 500, "narration": "现在清空画布，换成正式讲解。" },
+    { "type": "write_text", "id": "final", "text": "正式版本", "x": 80, "y": 100, "fontSize": 36, "duration": 700, "narration": "清空之后，我们开始正式版本。" }
   ]
 }
 ```
@@ -250,27 +274,19 @@
 
 ## 5. 排版与构图准则
 
-布局质量直接决定观感。生成脚本前**先在脑里打草稿**：
+1. 四周至少保留 `60–80px` 边距。
+2. 同级文字的 y 值间隔建议为 `fontSize × 1.6–2.0`。
+3. 标题 `36–48px`，正文 `20–28px`，标签 `16–22px`。
+4. 强调色不要太多，一张图通常不超过两种强调色。
+5. `commands` 顺序就是讲解顺序，不要乱序。
+6. 每个会保留在画布上的对象都应有唯一 `id`。
+7. `erase_object` 必须引用之前确实创建过的对象 id。
+8. `erase_area` 的区域不要过大，避免误擦重要内容。
 
-1. **留白**。画布四周保留至少 `60–80px` 边距。
-2. **基线节奏**。同级文本 `y` 值之间保持 `fontSize × (1.6–2.0)` 行距。
-3. **层级**：标题 `36–48px`，正文 `20–28px`，标签/注释 `16–22px`。
-4. **强调用色**。主色 `#111111`，强调色（蓝/红）只用于标签、连线、关键公式。
-   一张图的强调色不超过两种。
-5. **节奏感**。重要句子 `duration` 长一些；过渡线 `400–700ms`。
-   全场所有命令累加时长建议在 `8–25 秒` 之间。
-6. **id 唯一**。建议命名 `<语义>-<序号>`，例如 `title-1`、`line-arrow-2`。
-7. **顺序即叙事**。`commands` 是**讲解顺序**——先标题、后图形、再公式，不要乱序。
+文字宽度粗略估算：
 
-### 文字宽度估算（用于避免溢出）
-
-文字宽度 ≈ `fontSize × 字符数 × 系数`：
-- 中文/日文/全角：系数 `1.0`（即 1 字 ≈ 1 个 `fontSize` 宽）
-- 英文/数字：系数 `0.55`
-- 混排：取加权平均
-
-例：`fontSize=36` 的 "勾股定理" 宽 ≈ `36 × 4 = 144px`；
-`fontSize=24` 的 "Hello AI" 宽 ≈ `24 × 8 × 0.55 ≈ 106px`。
+- 中文宽度约等于 `fontSize × 字数`。
+- 英文/数字宽度约等于 `fontSize × 字符数 × 0.55`。
 
 ---
 
@@ -278,53 +294,40 @@
 
 前端会拒绝并提示以下情况：
 
-- 整体不是合法 JSON 对象 → "JSON 解析失败"
-- 缺少 `canvas` 或 `commands` → "缺少 canvas 配置 / commands 必须是数组"
-- 命令缺少必填字段 → 例如 "第 N 个命令 (write_text) 缺少 fontSize"
-- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path}` 之内 → "不支持的命令类型"
-- `from` / `to` 不是 `[number, number]` → "from 必须是 [x, y] 数字数组"
-- `draw_arrow.headSize` / `draw_arrow.headAngle` 不是数字 → 对应字段会报错
-- `draw_path.points` 少于 2 个点，或点不是 `[number, number]` → 对应位置会报错
-- `duration` 不是数字 → 命令缺 duration 报错；建议 ≥200
+- 整体不是合法 JSON 对象。
+- 缺少 `canvas` 或 `commands`。
+- 命令缺少必填字段。
+- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas}` 之内。
+- 坐标不是 `[number, number]` 或数值字段类型错误。
+- `draw_path.points` 少于 2 个点。
+- `erase_object` 没有 `targetId` 或 `targetIds`。
+- `erase_area` 的矩形缺少 `width` / `height`，或圆形缺少 `radius`。
+- `duration` 不是数字。
 
-**v1.3 不支持** 的特性，请不要尝试生成：
-- `draw_rect` / `draw_circle`
-- 图片、SVG path、贝塞尔曲线
-- 修改/删除/移动已绘制元素
-- 等待/延时命令、并行播放、循环
-- 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
-- 多人协作、保存/加载
+**v1.4 不支持** 的特性：
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`。
+- `draw_rect` / `draw_circle` 独立图形命令。
+- 图片、SVG path、贝塞尔曲线。
+- 修改或移动已绘制元素。
+- 等待/延时命令、并行播放、循环。
+- 多人协作、保存/加载。
 
----
-
-## 7. 与白板交互的工作流
-
-用户测试时遵循以下流程，你只需关注第 ② 步的产物：
-
-1. 用户告诉你主题（"讲一下二分查找"）
-2. **你输出** —— 仅 JSON 对象，无任何附加文字
-3. 用户复制 → 粘贴到页面左侧"JSON 命令脚本"框
-4. 用户点击"运行脚本"，画布按你设计的顺序逐步动画
-5. 若需调整，用户反馈，你输出新版本 JSON
+如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`。
 
 ---
 
-## 8. 输出契约（自检清单）
+## 7. 输出自检清单
 
 发送前自检：
 
-- [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
-- [ ] 顶层有 `canvas` 与 `commands`
-- [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_arrow, draw_path, set_canvas}`
-- [ ] 每个命令都有合法 `id`（字符串）和 `duration`（数字 ≥ 1）
-- [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
-- [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端，方向没有写反
-- [ ] `draw_path.points` 至少包含两个合法坐标点，且顺序符合笔迹移动方向
-- [ ] 文字按估算宽度不会溢出画布
-- [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
-- [ ] **大部分** `write_text` / `draw_line` / `draw_arrow` / `draw_path` 命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
-
-通过以上 9 项 → 输出。
+- [ ] 输出是单一 JSON 对象，没有任何解释文字或 Markdown。
+- [ ] 顶层有 `canvas` 与 `commands`。
+- [ ] `canvas.width` 和 `canvas.height` 都是数字。
+- [ ] 每个命令 `type` 合法。
+- [ ] 每个可见对象都有唯一 `id`。
+- [ ] 所有坐标都在画布范围内。
+- [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端。
+- [ ] `draw_path.points` 顺序符合笔迹移动方向。
+- [ ] `erase_object` 引用的是之前创建过的 id。
+- [ ] `erase_area` 区域大小合适，不会误擦重点内容。
+- [ ] 大部分绘制/擦除命令带有自然口语的 `narration`。
