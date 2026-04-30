@@ -10,6 +10,9 @@
 - **draw_arrow** — 从 `from` 箭尾指向 `to` 箭头尖端，可设置颜色、粗细、头部大小与张角
 - **draw_path** — 用 `points` 坐标数组绘制任意路径涂鸦，可设置颜色与粗细
 - **erase_object / erase_area / clear_canvas** — 删除对象、局部擦除或清空整张画布
+- **annotate_underline / annotate_circle / clear_annotations** — 在独立批注图层划重点，并可一键清除
+- **wait** — 在关键节点暂停，等待用户点击“下一步”后继续
+- **Azure TTS** — 可用 Microsoft Azure Speech 朗读 `narration` 旁白，并按播放器速度同步
 - 顺序执行 commands 数组，实时显示当前步骤
 - JSON 格式错误、未知命令、缺字段都有明确提示
 
@@ -56,6 +59,16 @@ Railway 会执行：
 4. 在 **Settings → Networking → Generate Domain** 生成公开 URL
 
 不需要配置环境变量。项目根目录的 `railway.json` 会覆盖 Railway Dashboard 中的 Build Command / Start Command。
+
+如需启用 Azure 语音合成，请在 Railway Variables 中设置：
+
+```text
+AZURE_SPEECH_KEY=你的 Azure Speech Key
+AZURE_SPEECH_REGION=你的 Azure Speech Region
+AZURE_SPEECH_VOICE=zh-CN-XiaoxiaoNeural
+```
+
+`AZURE_SPEECH_VOICE` 可选；不设置时默认使用 `zh-CN-XiaoxiaoNeural`。未配置 Key/Region 时，白板仍可正常播放，只是 Azure TTS 开关会提示未配置。
 
 ## 项目结构
 

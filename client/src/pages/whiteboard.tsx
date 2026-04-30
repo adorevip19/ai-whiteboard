@@ -4,10 +4,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Play, Square, Trash2, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import {
+  AlertCircle,
+  CheckCircle2,
+  FileText,
+  Gauge,
+  Play,
+  StepForward,
+  Square,
+  Trash2,
+  Volume2,
+} from "lucide-react";
 import { WhiteboardCanvas } from "@/whiteboard/WhiteboardCanvas";
 import { NarrationBar } from "@/whiteboard/NarrationBar";
-import { ScriptRunner } from "@/whiteboard/ScriptRunner";
+import { ScriptRunner, type WaitState } from "@/whiteboard/ScriptRunner";
 import {
   validateScript,
   describeCommand,
@@ -31,15 +43,99 @@ export default function WhiteboardPage() {
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [activeCommands, setActiveCommands] = useState<WhiteboardCommand[]>([]);
   const [narration, setNarration] = useState<string | null>(null);
+  const [narrationDurationMs, setNarrationDurationMs] = useState<number | null>(null);
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.75);
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [ttsStatus, setTtsStatus] = useState<string>("TTS 未开启");
+  const [waitState, setWaitState] = useState<WaitState | null>(null);
 
   const runnerRef = useRef<ScriptRunner | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const ttsRequestIdRef = useRef(0);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       runnerRef.current?.cancel();
+      audioRef.current?.pause();
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    runnerRef.current?.setPlaybackSpeed(playbackSpeed);
+  }, [playbackSpeed]);
+
+  useEffect(() => {
+    const requestId = ++ttsRequestIdRef.current;
+    audioRef.current?.pause();
+    audioRef.current = null;
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+
+    if (!ttsEnabled) {
+      setTtsStatus("TTS 未开启");
+      return;
+    }
+    if (!narration) {
+      setTtsStatus("等待旁白");
+      return;
+    }
+
+    setTtsStatus("正在合成语音…");
+    const controller = new AbortController();
+    const targetDurationMs = narrationDurationMs ?? undefined;
+
+    void fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: narration, rate: playbackSpeed }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.message ?? `TTS 请求失败：${response.status}`);
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        if (requestId !== ttsRequestIdRef.current) return;
+        const url = URL.createObjectURL(blob);
+        audioUrlRef.current = url;
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onloadedmetadata = () => {
+          if (requestId !== ttsRequestIdRef.current) return;
+          if (
+            targetDurationMs &&
+            Number.isFinite(audio.duration) &&
+            audio.duration > 0
+          ) {
+            const fitRate = (audio.duration * 1000) / targetDurationMs;
+            audio.playbackRate = Math.max(0.5, Math.min(fitRate, 2));
+          } else {
+            audio.playbackRate = Math.max(0.5, Math.min(playbackSpeed, 2));
+          }
+          void audio.play().then(
+            () => setTtsStatus("语音播放中"),
+            () => setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS"),
+          );
+        };
+        audio.onended = () => {
+          if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
+        };
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setTtsStatus(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => controller.abort();
+  }, [narration, narrationDurationMs, playbackSpeed, ttsEnabled]);
 
   const handleRun = () => {
     // Cancel any in-flight run.
@@ -72,6 +168,7 @@ export default function WhiteboardPage() {
     setStepIndex(0);
     setStepTotal(result.script.commands.length);
     setStatus("running");
+    setWaitState(null);
 
     const runner = new ScriptRunner(result.script, {
       onCanvasChange: (c) => setCanvas(c),
@@ -81,13 +178,20 @@ export default function WhiteboardPage() {
         setStepIndex(i);
         setStepTotal(total);
       },
-      onNarrationChange: (n) => setNarration(n),
-      onComplete: () => setStatus("done"),
+      onNarrationChange: (n, targetDurationMs) => {
+        setNarration(n);
+        setNarrationDurationMs(targetDurationMs ?? null);
+      },
+      onWaitChange: (wait) => setWaitState(wait),
+      onComplete: () => {
+        setWaitState(null);
+        setStatus("done");
+      },
       onError: (msg) => {
         setErrorMsg(msg);
         setStatus("error");
       },
-    });
+    }, { playbackSpeed });
     runnerRef.current = runner;
     void runner.run();
   };
@@ -95,12 +199,15 @@ export default function WhiteboardPage() {
   const handleStop = () => {
     runnerRef.current?.cancel();
     runnerRef.current = null;
+    audioRef.current?.pause();
     setStatus("idle");
+    setWaitState(null);
   };
 
   const handleClear = () => {
     runnerRef.current?.cancel();
     runnerRef.current = null;
+    audioRef.current?.pause();
     setElements([]);
     setAnnotations([]);
     setStepIndex(0);
@@ -109,11 +216,17 @@ export default function WhiteboardPage() {
     setErrorMsg("");
     setActiveCommands([]);
     setNarration(null);
+    setNarrationDurationMs(null);
+    setWaitState(null);
   };
 
   const handleLoadSample = () => {
     setScriptText(sampleScriptString);
     setErrorMsg("");
+  };
+
+  const handleContinue = () => {
+    runnerRef.current?.continueFromWait();
   };
 
   const stepLabel = useMemo(() => {
@@ -188,6 +301,17 @@ export default function WhiteboardPage() {
                 停止
               </Button>
             ) : null}
+            {waitState ? (
+              <Button
+                size="sm"
+                variant="default"
+                onClick={handleContinue}
+                data-testid="button-next"
+              >
+                <StepForward className="mr-1.5 h-3.5 w-3.5" />
+                下一步
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="outline"
@@ -207,6 +331,42 @@ export default function WhiteboardPage() {
               <FileText className="mr-1.5 h-3.5 w-3.5" />
               示例
             </Button>
+          </div>
+
+          <div className="space-y-3 border-b px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Gauge className="h-4 w-4 text-muted-foreground" />
+              <div className="min-w-[64px] text-xs font-medium">播放速度</div>
+              <Slider
+                value={[playbackSpeed]}
+                min={0.5}
+                max={1.5}
+                step={0.05}
+                onValueChange={(value) => setPlaybackSpeed(value[0] ?? 0.75)}
+                className="flex-1"
+                data-testid="slider-playback-speed"
+              />
+              <span className="w-12 text-right font-mono text-xs text-muted-foreground">
+                {playbackSpeed.toFixed(2)}x
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Volume2 className="h-4 w-4 text-muted-foreground" />
+              <div className="min-w-[64px] text-xs font-medium">Azure TTS</div>
+              <Switch
+                checked={ttsEnabled}
+                onCheckedChange={setTtsEnabled}
+                data-testid="switch-tts"
+              />
+              <span className="truncate text-xs text-muted-foreground" title={ttsStatus}>
+                {ttsStatus}
+              </span>
+            </div>
+            {waitState ? (
+              <div className="rounded-md border bg-primary/5 px-3 py-2 text-xs text-primary">
+                {waitState.message}
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-1 flex-col overflow-hidden p-4">
@@ -242,7 +402,7 @@ export default function WhiteboardPage() {
           </div>
 
           {/* Narration / subtitle bar — appears between canvas and step indicator */}
-          <NarrationBar text={narration} />
+          <NarrationBar text={narration} charsPerSecond={9 * playbackSpeed} />
 
           <Separator />
           <div className="flex items-center gap-3 px-6 py-3 text-xs">

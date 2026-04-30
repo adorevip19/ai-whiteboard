@@ -16,9 +16,18 @@ export interface RunnerCallbacks {
   onStepChange: (currentIndex: number, total: number) => void;
   // Push the full narration string for the upcoming command. The UI is
   // responsible for animating its appearance (typewriter). null clears it.
-  onNarrationChange: (narration: string | null) => void;
+  onNarrationChange: (narration: string | null, targetDurationMs?: number) => void;
+  onWaitChange: (wait: WaitState | null) => void;
   onComplete: () => void;
   onError: (message: string) => void;
+}
+
+export interface RunnerOptions {
+  playbackSpeed?: number;
+}
+
+export interface WaitState {
+  message: string;
 }
 
 export class ScriptRunner {
@@ -29,19 +38,38 @@ export class ScriptRunner {
   private elements: RenderedElement[] = [];
   private annotations: AnnotationElement[] = [];
   private canvas: CanvasConfig;
+  private playbackSpeed: number;
+  private waitResolver: (() => void) | null = null;
 
-  constructor(script: WhiteboardScript, cb: RunnerCallbacks) {
+  constructor(script: WhiteboardScript, cb: RunnerCallbacks, options: RunnerOptions = {}) {
     this.script = script;
     this.cb = cb;
     this.canvas = script.canvas;
+    this.playbackSpeed = this.normalizePlaybackSpeed(options.playbackSpeed);
   }
 
   cancel() {
     this.cancelled = true;
+    if (this.waitResolver) {
+      this.waitResolver();
+      this.waitResolver = null;
+      this.cb.onWaitChange(null);
+    }
     if (this.currentRaf !== null) {
       cancelAnimationFrame(this.currentRaf);
       this.currentRaf = null;
     }
+  }
+
+  continueFromWait() {
+    if (!this.waitResolver) return;
+    this.waitResolver();
+    this.waitResolver = null;
+    this.cb.onWaitChange(null);
+  }
+
+  setPlaybackSpeed(speed: number) {
+    this.playbackSpeed = this.normalizePlaybackSpeed(speed);
   }
 
   async run() {
@@ -54,6 +82,7 @@ export class ScriptRunner {
       this.cb.onElementsChange([]);
       this.cb.onAnnotationsChange([]);
 
+      this.cb.onWaitChange(null);
       this.cb.onNarrationChange(null);
       const total = this.script.commands.length;
       for (let i = 0; i < total; i++) {
@@ -69,13 +98,14 @@ export class ScriptRunner {
           cmd.type === "erase_object" ||
           cmd.type === "erase_area" ||
           cmd.type === "clear_canvas" ||
+          cmd.type === "wait" ||
           cmd.type === "annotate_underline" ||
           cmd.type === "annotate_circle" ||
           cmd.type === "clear_annotations"
             ? (cmd.narration ?? null)
             : null;
         // Always push (even null) so the bar updates between steps.
-        this.cb.onNarrationChange(narration);
+        this.cb.onNarrationChange(narration, this.estimateCommandDuration(cmd));
         await this.runCommand(cmd);
       }
       if (this.cancelled) return;
@@ -96,13 +126,30 @@ export class ScriptRunner {
     this.cb.onAnnotationsChange([...this.annotations]);
   }
 
+  private normalizePlaybackSpeed(speed: unknown) {
+    return typeof speed === "number" && Number.isFinite(speed)
+      ? Math.max(0.25, Math.min(speed, 2))
+      : 1;
+  }
+
+  private durationFor(duration: number) {
+    return Math.max(duration / this.playbackSpeed, 1);
+  }
+
+  private estimateCommandDuration(cmd: WhiteboardCommand) {
+    if ("duration" in cmd && typeof cmd.duration === "number") {
+      return this.durationFor(cmd.duration);
+    }
+    return undefined;
+  }
+
   private wait(duration = 0) {
     return new Promise<void>((resolve) => {
       if (duration <= 0 || this.cancelled) {
         resolve();
         return;
       }
-      window.setTimeout(resolve, duration);
+      window.setTimeout(resolve, this.durationFor(duration));
     });
   }
 
@@ -136,6 +183,9 @@ export class ScriptRunner {
     }
     if (cmd.type === "clear_canvas") {
       return this.clearCanvas(cmd);
+    }
+    if (cmd.type === "wait") {
+      return this.waitForUser(cmd);
     }
     if (cmd.type === "annotate_underline") {
       return this.animateAnnotateUnderline(cmd);
@@ -175,7 +225,7 @@ export class ScriptRunner {
         resolve();
         return;
       }
-      const duration = Math.max(cmd.duration, 1);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -220,7 +270,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = Math.max(cmd.duration, 1);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -271,7 +321,7 @@ export class ScriptRunner {
       });
       this.commit();
 
-      const duration = Math.max(cmd.duration, 1);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
       const [x1, y1] = cmd.from;
       const [x2, y2] = cmd.to;
@@ -332,7 +382,7 @@ export class ScriptRunner {
         return;
       }
 
-      const duration = Math.max(cmd.duration, 1);
+      const duration = this.durationFor(cmd.duration);
       const start = performance.now();
 
       const tick = (now: number) => {
@@ -428,6 +478,19 @@ export class ScriptRunner {
     this.commit();
     this.commitAnnotations();
     await this.wait(cmd.duration ?? 300);
+  }
+
+  private waitForUser(cmd: Extract<WhiteboardCommand, { type: "wait" }>) {
+    return new Promise<void>((resolve) => {
+      if (this.cancelled) {
+        resolve();
+        return;
+      }
+      this.cb.onWaitChange({
+        message: cmd.message ?? "点击“下一步”继续讲解。",
+      });
+      this.waitResolver = resolve;
+    });
   }
 
   // ── Annotation layer ────────────────────────────────────────────────────────
@@ -555,7 +618,7 @@ export class ScriptRunner {
         return;
       }
 
-      const dur = Math.max(duration, 1);
+      const dur = this.durationFor(duration);
       const start = performance.now();
 
       const tick = (now: number) => {
