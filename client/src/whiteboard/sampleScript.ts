@@ -1,4 +1,4 @@
-// Built-in sample script demonstrating write_text, draw_line, and narration.
+// Built-in sample script demonstrating write_text, draw_line, draw_path, and narration.
 import type { WhiteboardScript } from "./commandTypes";
 
 export const sampleScript: WhiteboardScript = {
@@ -39,6 +39,23 @@ export const sampleScript: WhiteboardScript = {
       color: "#333333",
       duration: 1600,
       narration: "整块白板的内容,都是由一段 JSON 命令脚本控制的。",
+    },
+    {
+      type: "draw_path",
+      id: "freehand-wave",
+      points: [
+        [780, 150],
+        [820, 120],
+        [870, 175],
+        [920, 120],
+        [970, 175],
+        [1020, 130],
+        [1060, 155],
+      ],
+      color: "#ef4444",
+      width: 5,
+      duration: 1200,
+      narration: "现在我用一条自由路径,演示脚本也可以控制手绘涂鸦。",
     },
     {
       type: "write_text",

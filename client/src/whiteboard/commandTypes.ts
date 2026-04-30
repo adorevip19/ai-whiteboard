@@ -31,10 +31,21 @@ export interface DrawLineCommand {
   narration?: string;
 }
 
+export interface DrawPathCommand {
+  type: "draw_path";
+  id: string;
+  points: [number, number][];
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
 export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
-  | DrawLineCommand;
+  | DrawLineCommand
+  | DrawPathCommand;
 
 export interface CanvasConfig {
   width: number;
@@ -65,6 +76,14 @@ export type RenderedElement =
       to: [number, number];
       // current drawn endpoint (interpolated during animation); equals `to` when finished
       currentEnd: [number, number];
+      color: string;
+      width: number;
+    }
+  | {
+      kind: "path";
+      id: string;
+      points: [number, number][];
+      currentPoints: [number, number][];
       color: string;
       width: number;
     };
@@ -202,6 +221,49 @@ function validateCommand(
     };
   }
 
+  if (type === "draw_path") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_path) 缺少 id。` };
+    if (!Array.isArray(o.points) || o.points.length < 2) {
+      return {
+        ok: false,
+        error: `${where} (draw_path) points 必须至少包含两个 [x, y] 坐标。`,
+      };
+    }
+
+    const points: [number, number][] = [];
+    for (let j = 0; j < o.points.length; j++) {
+      const p = o.points[j];
+      if (
+        !Array.isArray(p) ||
+        p.length !== 2 ||
+        typeof p[0] !== "number" ||
+        typeof p[1] !== "number"
+      ) {
+        return {
+          ok: false,
+          error: `${where} (draw_path) points[${j}] 必须是 [x, y] 数字数组。`,
+        };
+      }
+      points.push([p[0], p[1]]);
+    }
+
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_path) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "draw_path",
+        id: o.id,
+        points,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        width: typeof o.width === "number" ? o.width : 2,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "set_canvas") {
     if (typeof o.width !== "number" || typeof o.height !== "number")
       return { ok: false, error: `${where} (set_canvas) 缺少 width/height。` };
@@ -227,6 +289,9 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "draw_line") {
     return `画线 (${cmd.from[0]},${cmd.from[1]}) → (${cmd.to[0]},${cmd.to[1]})`;
+  }
+  if (cmd.type === "draw_path") {
+    return `涂鸦路径 ${cmd.points.length} 个点`;
   }
   if (cmd.type === "set_canvas") {
     return `设置画布 ${cmd.width}×${cmd.height}`;

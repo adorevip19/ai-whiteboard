@@ -54,7 +54,9 @@ export class ScriptRunner {
         // Surface narration BEFORE drawing so the subtitle leads the strokes.
         const cmd = this.script.commands[i];
         const narration =
-          cmd.type === "write_text" || cmd.type === "draw_line"
+          cmd.type === "write_text" ||
+          cmd.type === "draw_line" ||
+          cmd.type === "draw_path"
             ? (cmd.narration ?? null)
             : null;
         // Always push (even null) so the bar updates between steps.
@@ -89,6 +91,9 @@ export class ScriptRunner {
     }
     if (cmd.type === "draw_line") {
       return this.animateLine(cmd);
+    }
+    if (cmd.type === "draw_path") {
+      return this.animatePath(cmd);
     }
     return Promise.reject(
       // Should never reach here because validation rejected unsupported types,
@@ -193,6 +198,91 @@ export class ScriptRunner {
           this.currentRaf = requestAnimationFrame(tick);
         }
       };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animatePath(cmd: Extract<WhiteboardCommand, { type: "draw_path" }>) {
+    return new Promise<void>((resolve) => {
+      const elIndex = this.elements.length;
+      const points = cmd.points.map(([x, y]) => [x, y] as [number, number]);
+      this.elements.push({
+        kind: "path",
+        id: cmd.id,
+        points,
+        currentPoints: [points[0]],
+        color: cmd.color ?? "#111111",
+        width: cmd.width ?? 2,
+      });
+      this.commit();
+
+      const segmentLengths: number[] = [];
+      let totalLength = 0;
+      for (let i = 1; i < points.length; i++) {
+        const [x1, y1] = points[i - 1];
+        const [x2, y2] = points[i];
+        const length = Math.hypot(x2 - x1, y2 - y1);
+        segmentLengths.push(length);
+        totalLength += length;
+      }
+
+      if (totalLength === 0) {
+        resolve();
+        return;
+      }
+
+      const duration = Math.max(cmd.duration, 1);
+      const start = performance.now();
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+
+        const t = Math.min((now - start) / duration, 1);
+        const targetLength = totalLength * t;
+        let walked = 0;
+        const visiblePoints: [number, number][] = [points[0]];
+
+        for (let i = 1; i < points.length; i++) {
+          const segmentLength = segmentLengths[i - 1];
+          const nextWalked = walked + segmentLength;
+
+          if (nextWalked <= targetLength) {
+            visiblePoints.push(points[i]);
+            walked = nextWalked;
+            continue;
+          }
+
+          if (segmentLength > 0) {
+            const localT = Math.max(
+              0,
+              Math.min((targetLength - walked) / segmentLength, 1),
+            );
+            const [x1, y1] = points[i - 1];
+            const [x2, y2] = points[i];
+            visiblePoints.push([
+              x1 + (x2 - x1) * localT,
+              y1 + (y2 - y1) * localT,
+            ]);
+          }
+          break;
+        }
+
+        const target = this.elements[elIndex];
+        if (target && target.kind === "path") {
+          target.currentPoints = t >= 1 ? points : visiblePoints;
+          this.commit();
+        }
+
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+
       this.currentRaf = requestAnimationFrame(tick);
     });
   }

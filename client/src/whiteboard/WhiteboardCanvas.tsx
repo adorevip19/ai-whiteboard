@@ -67,6 +67,20 @@ export function WhiteboardCanvas({ canvas, elements }: Props) {
               />
             );
           }
+          if (el.kind === "path") {
+            return (
+              <polyline
+                key={el.id}
+                points={el.currentPoints.map(([x, y]) => `${x},${y}`).join(" ")}
+                fill="none"
+                stroke={el.color}
+                strokeWidth={el.width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                data-testid={`path-${el.id}`}
+              />
+            );
+          }
           // text
           return (
             <text
