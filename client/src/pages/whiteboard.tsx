@@ -30,7 +30,22 @@ import {
 } from "@/whiteboard/commandTypes";
 import { sampleScriptString, sampleScript } from "@/whiteboard/sampleScript";
 
-type RunStatus = "idle" | "running" | "done" | "error";
+type RunStatus = "idle" | "preparing" | "running" | "done" | "error";
+
+type CachedTtsAudio = {
+  url: string;
+  blob: Blob;
+};
+
+function getNarrationFromCommand(cmd: WhiteboardCommand) {
+  return "narration" in cmd && typeof cmd.narration === "string"
+    ? cmd.narration.trim() || null
+    : null;
+}
+
+function getTtsCacheKey(text: string) {
+  return text;
+}
 
 export default function WhiteboardPage() {
   const [scriptText, setScriptText] = useState<string>(sampleScriptString);
@@ -51,15 +66,20 @@ export default function WhiteboardPage() {
 
   const runnerRef = useRef<ScriptRunner | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
   const ttsRequestIdRef = useRef(0);
+  const ttsCacheRef = useRef<Map<string, CachedTtsAudio>>(new Map());
+  const ttsPrefetchControllerRef = useRef<AbortController | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       runnerRef.current?.cancel();
       audioRef.current?.pause();
-      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
+      ttsPrefetchControllerRef.current?.abort();
+      Array.from(ttsCacheRef.current.values()).forEach((cached) => {
+        URL.revokeObjectURL(cached.url);
+      });
+      ttsCacheRef.current.clear();
     };
   }, []);
 
@@ -71,10 +91,6 @@ export default function WhiteboardPage() {
     const requestId = ++ttsRequestIdRef.current;
     audioRef.current?.pause();
     audioRef.current = null;
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
 
     if (!ttsEnabled) {
       setTtsStatus("TTS 未开启");
@@ -85,62 +101,116 @@ export default function WhiteboardPage() {
       return;
     }
 
-    setTtsStatus("正在合成语音…");
-    const controller = new AbortController();
+    const cached = ttsCacheRef.current.get(getTtsCacheKey(narration));
+    if (!cached) {
+      setTtsStatus("语音缓存未命中，请重新运行脚本");
+      return;
+    }
+
     const targetDurationMs = narrationDurationMs ?? undefined;
+    const audio = new Audio(cached.url);
+    audioRef.current = audio;
 
-    void fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: narration, rate: playbackSpeed }),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => null);
-          throw new Error(body?.message ?? `TTS 请求失败：${response.status}`);
-        }
-        return response.blob();
-      })
-      .then((blob) => {
-        if (requestId !== ttsRequestIdRef.current) return;
-        const url = URL.createObjectURL(blob);
-        audioUrlRef.current = url;
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onloadedmetadata = () => {
-          if (requestId !== ttsRequestIdRef.current) return;
-          if (
-            targetDurationMs &&
-            Number.isFinite(audio.duration) &&
-            audio.duration > 0
-          ) {
-            const fitRate = (audio.duration * 1000) / targetDurationMs;
-            audio.playbackRate = Math.max(0.5, Math.min(fitRate, 2));
-          } else {
-            audio.playbackRate = Math.max(0.5, Math.min(playbackSpeed, 2));
-          }
-          void audio.play().then(
-            () => setTtsStatus("语音播放中"),
-            () => setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS"),
-          );
-        };
-        audio.onended = () => {
-          if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
-        };
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        setTtsStatus(error instanceof Error ? error.message : String(error));
-      });
+    const playAudio = () => {
+      if (requestId !== ttsRequestIdRef.current) return;
+      if (
+        targetDurationMs &&
+        Number.isFinite(audio.duration) &&
+        audio.duration > 0
+      ) {
+        const fitRate = (audio.duration * 1000) / targetDurationMs;
+        audio.playbackRate = Math.max(0.5, Math.min(fitRate, 2));
+      } else {
+        audio.playbackRate = Math.max(0.5, Math.min(playbackSpeed, 2));
+      }
+      void audio.play().then(
+        () => setTtsStatus("语音播放中"),
+        () => setTtsStatus("浏览器阻止了自动播放，请再次点击运行或关闭 TTS"),
+      );
+    };
 
-    return () => controller.abort();
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      playAudio();
+    } else {
+      audio.onloadedmetadata = playAudio;
+    }
+    audio.onended = () => {
+      if (requestId === ttsRequestIdRef.current) setTtsStatus("语音完成");
+    };
   }, [narration, narrationDurationMs, playbackSpeed, ttsEnabled]);
 
-  const handleRun = () => {
+  const synthesizeNarration = async (
+    text: string,
+    signal: AbortSignal,
+  ) => {
+    const cacheKey = getTtsCacheKey(text);
+    const cached = ttsCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+
+    const response = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, rate: 1 }),
+      signal,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.message ?? `TTS 请求失败：${response.status}`);
+    }
+    const blob = await response.blob();
+    const audio = {
+      blob,
+      url: URL.createObjectURL(blob),
+    };
+    ttsCacheRef.current.set(cacheKey, audio);
+    return audio;
+  };
+
+  const prefetchNarrations = async (commands: WhiteboardCommand[]) => {
+    if (!ttsEnabled) {
+      setTtsStatus("TTS 未开启");
+      return true;
+    }
+
+    ttsPrefetchControllerRef.current?.abort();
+    const controller = new AbortController();
+    ttsPrefetchControllerRef.current = controller;
+
+    const narrations = Array.from(
+      new Set(commands.map(getNarrationFromCommand).filter(Boolean) as string[]),
+    );
+    if (narrations.length === 0) {
+      setTtsStatus("脚本没有旁白");
+      return true;
+    }
+
+    try {
+      for (let i = 0; i < narrations.length; i++) {
+        const text = narrations[i];
+        setTtsStatus(`正在预生成语音 ${i + 1}/${narrations.length}`);
+        await synthesizeNarration(text, controller.signal);
+      }
+      setTtsStatus(`语音已缓存 ${narrations.length} 条`);
+      return true;
+    } catch (error) {
+      if (controller.signal.aborted) return false;
+      const message = error instanceof Error ? error.message : String(error);
+      setTtsStatus(message);
+      setErrorMsg(message);
+      setStatus("error");
+      return false;
+    } finally {
+      if (ttsPrefetchControllerRef.current === controller) {
+        ttsPrefetchControllerRef.current = null;
+      }
+    }
+  };
+
+  const handleRun = async () => {
     // Cancel any in-flight run.
     runnerRef.current?.cancel();
     runnerRef.current = null;
+    ttsPrefetchControllerRef.current?.abort();
 
     setErrorMsg("");
     let parsed: unknown;
@@ -156,6 +226,12 @@ export default function WhiteboardPage() {
     if (!result.ok) {
       setStatus("error");
       setErrorMsg(result.error);
+      return;
+    }
+
+    setStatus(ttsEnabled ? "preparing" : "running");
+    const ttsReady = await prefetchNarrations(result.script.commands);
+    if (!ttsReady) {
       return;
     }
 
@@ -199,6 +275,7 @@ export default function WhiteboardPage() {
   const handleStop = () => {
     runnerRef.current?.cancel();
     runnerRef.current = null;
+    ttsPrefetchControllerRef.current?.abort();
     audioRef.current?.pause();
     setStatus("idle");
     setWaitState(null);
@@ -207,6 +284,7 @@ export default function WhiteboardPage() {
   const handleClear = () => {
     runnerRef.current?.cancel();
     runnerRef.current = null;
+    ttsPrefetchControllerRef.current?.abort();
     audioRef.current?.pause();
     setElements([]);
     setAnnotations([]);
@@ -231,6 +309,7 @@ export default function WhiteboardPage() {
 
   const stepLabel = useMemo(() => {
     if (status === "error") return "执行出错";
+    if (status === "preparing") return "正在预生成语音";
     if (status === "idle") return "等待运行";
     if (status === "done") return "执行完成";
     if (stepTotal === 0) return "等待运行";
@@ -263,7 +342,7 @@ export default function WhiteboardPage() {
           </div>
         </div>
         <Badge variant="outline" data-testid="badge-status">
-          {status === "running" && (
+          {(status === "running" || status === "preparing") && (
             <span className="mr-1.5 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
           )}
           {status === "done" && (
@@ -284,13 +363,13 @@ export default function WhiteboardPage() {
             <Button
               size="sm"
               onClick={handleRun}
-              disabled={status === "running"}
+              disabled={status === "running" || status === "preparing"}
               data-testid="button-run"
             >
               <Play className="mr-1.5 h-3.5 w-3.5" />
               运行脚本
             </Button>
-            {status === "running" ? (
+            {status === "running" || status === "preparing" ? (
               <Button
                 size="sm"
                 variant="outline"
