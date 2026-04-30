@@ -194,6 +194,12 @@ export const sampleScript: WhiteboardScript = {
       narration: "我把这个核心公式圈出来，它是整个推导的结论，请大家重点记忆。",
     },
     {
+      type: "wait",
+      id: "checkpoint-formula",
+      message: "确认理解公式后，点击“下一步”继续。",
+      narration: "这里先停一下，大家确认一下这个公式有没有理解。",
+    },
+    {
       type: "annotate_underline",
       id: "hl-title",
       x1: 80,
