@@ -25,10 +25,12 @@ export class ScriptRunner {
   private cancelled = false;
   private currentRaf: number | null = null;
   private elements: RenderedElement[] = [];
+  private canvas: CanvasConfig;
 
   constructor(script: WhiteboardScript, cb: RunnerCallbacks) {
     this.script = script;
     this.cb = cb;
+    this.canvas = script.canvas;
   }
 
   cancel() {
@@ -43,7 +45,8 @@ export class ScriptRunner {
     try {
       // Reset
       this.elements = [];
-      this.cb.onCanvasChange(this.script.canvas);
+      this.canvas = this.script.canvas;
+      this.cb.onCanvasChange(this.canvas);
       this.cb.onElementsChange([]);
 
       this.cb.onNarrationChange(null);
@@ -57,7 +60,10 @@ export class ScriptRunner {
           cmd.type === "write_text" ||
           cmd.type === "draw_line" ||
           cmd.type === "draw_arrow" ||
-          cmd.type === "draw_path"
+          cmd.type === "draw_path" ||
+          cmd.type === "erase_object" ||
+          cmd.type === "erase_area" ||
+          cmd.type === "clear_canvas"
             ? (cmd.narration ?? null)
             : null;
         // Always push (even null) so the bar updates between steps.
@@ -78,13 +84,24 @@ export class ScriptRunner {
     this.cb.onElementsChange([...this.elements]);
   }
 
+  private wait(duration = 0) {
+    return new Promise<void>((resolve) => {
+      if (duration <= 0 || this.cancelled) {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, duration);
+    });
+  }
+
   private runCommand(cmd: WhiteboardCommand): Promise<void> {
     if (cmd.type === "set_canvas") {
-      this.cb.onCanvasChange({
+      this.canvas = {
         width: cmd.width,
         height: cmd.height,
         background: cmd.background ?? "#ffffff",
-      });
+      };
+      this.cb.onCanvasChange(this.canvas);
       return Promise.resolve();
     }
     if (cmd.type === "write_text") {
@@ -98,6 +115,15 @@ export class ScriptRunner {
     }
     if (cmd.type === "draw_path") {
       return this.animatePath(cmd);
+    }
+    if (cmd.type === "erase_object") {
+      return this.eraseObject(cmd);
+    }
+    if (cmd.type === "erase_area") {
+      return this.eraseArea(cmd);
+    }
+    if (cmd.type === "clear_canvas") {
+      return this.clearCanvas(cmd);
     }
     return Promise.reject(
       // Should never reach here because validation rejected unsupported types,
@@ -339,5 +365,45 @@ export class ScriptRunner {
 
       this.currentRaf = requestAnimationFrame(tick);
     });
+  }
+
+  private async eraseObject(
+    cmd: Extract<WhiteboardCommand, { type: "erase_object" }>,
+  ) {
+    const targetIds = new Set(cmd.targetIds ?? []);
+    this.elements = this.elements.filter((el) => !targetIds.has(el.id));
+    this.commit();
+    await this.wait(cmd.duration ?? 300);
+  }
+
+  private async eraseArea(
+    cmd: Extract<WhiteboardCommand, { type: "erase_area" }>,
+  ) {
+    const shape = cmd.shape ?? "rect";
+    this.elements.push({
+      kind: "eraser",
+      id: cmd.id,
+      shape,
+      x: cmd.x,
+      y: cmd.y,
+      width: cmd.width ?? 0,
+      height: cmd.height ?? 0,
+      radius: cmd.radius ?? 0,
+      color: this.canvas.background,
+    });
+    this.commit();
+    await this.wait(cmd.duration ?? 300);
+  }
+
+  private async clearCanvas(
+    cmd: Extract<WhiteboardCommand, { type: "clear_canvas" }>,
+  ) {
+    this.elements = [];
+    if (cmd.background) {
+      this.canvas = { ...this.canvas, background: cmd.background };
+      this.cb.onCanvasChange(this.canvas);
+    }
+    this.commit();
+    await this.wait(cmd.duration ?? 300);
   }
 }
