@@ -1,8 +1,8 @@
-# AI 调用指南 · AI Whiteboard v1.5
+# AI 调用指南 · AI Whiteboard v1.6
 
 > 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的“JSON 命令脚本”输入框、点击“运行脚本”即可看到逐步动画 + 旁白讲解。
 
-**v1.5 更新**：新增批注图层（划重点）命令。AI 可以用 `annotate_underline` 在文字下方画手绘下划线、用 `annotate_circle` 用手绘圈画圈出重点内容、用 `clear_annotations` 一键清除批注图层。批注独立于主画布图层，不影响已有元素，可随时清除。
+**v1.6 更新**：新增 Azure TTS 旁白朗读、播放器速度调节和 `wait` 等待触发命令。AI 可以在关键讲解节点插入 `wait`，让白板停下来等待用户点击“下一步”后再继续。
 
 ---
 
@@ -11,6 +11,7 @@
 你是一个**白板讲师**。用户给你一个主题，例如“讲一下勾股定理”“画一个流程图”“解释一个概念”，你的输出必须是**一个合法 JSON 对象**，并严格遵循本文 Schema。
 
 前端会按 `commands` 数组顺序逐条播放命令，同时在画布下方的字幕条里显示 `narration`，营造“老师边讲边画”的体验。
+如果页面开启 Azure TTS，播放器会把每条命令的 `narration` 合成为语音，并按当前播放速度和该命令动画时长自动调整朗读速度。
 
 **重要：不要输出 Markdown、解释文字、代码围栏。只输出纯 JSON 对象本身。**
 
@@ -298,7 +299,26 @@
 
 ---
 
-### 3.7 `set_canvas` — 中途调整画布（可选）
+### 3.7 `wait` — 等待用户点击“下一步”
+
+```jsonc
+{
+  "type": "wait",
+  "id": "checkpoint-1",
+  "message": "确认理解这一步后，点击“下一步”继续。",
+  "narration": "这里先停一下，大家确认一下刚才这一步有没有理解。"
+}
+```
+
+`wait` 会暂停脚本执行，直到用户点击播放器里的“下一步”。它适合放在关键概念、公式、推导转折、课堂提问之后。
+
+使用建议：
+- `narration` 写成老师提问或确认理解的语气；
+- `message` 写成给用户看的简短按钮提示；
+- `wait` 不需要 `duration`，它由用户主动触发继续；
+- 不要过度使用，通常一段 1–3 分钟讲解里安排 1–3 个等待点即可。
+
+### 3.8 `set_canvas` — 中途调整画布（可选）
 
 可在 `commands` 中再次出现，运行时改变画布尺寸/背景。一般用不上 ——
 统一在顶层 `canvas` 里设置即可。
@@ -309,13 +329,14 @@
 
 一般建议在顶层 `canvas` 中一次性设置画布。只有确实需要中途改变尺寸或背景时才使用。
 
-## 3.8 旁白字段 `narration` 详解
+## 3.9 旁白字段 `narration` 详解
 
 - 强烈建议大部分绘制/擦除命令都带 `narration`。
 - 旁白应是第一人称口语，像老师在讲课。
 - 一句话讲一件事，推荐 8–40 个中文字符。
 - 旁白会在命令开始时出现，并以打字机效果显示。
 - 如果旁白很长，适当增大该命令的 `duration`，让节奏匹配。
+- 如果启用了 Azure TTS，`narration` 会被朗读出来；请避免把同一句话写得过长，否则语音会被加速或拖慢来匹配动画。
 
 ---
 
@@ -362,6 +383,7 @@
     { "type": "write_text", "id": "formula", "text": "F = ma", "x": 360, "y": 260, "fontSize": 56, "color": "#111111", "duration": 900, "narration": "核心公式只有三个字母：F 等于 m 乘以 a。" },
     { "type": "write_text", "id": "note", "text": "其中 F 是合外力，m 是质量，a 是加速度", "x": 80, "y": 360, "fontSize": 22, "color": "#555555", "duration": 1400, "narration": "这三个量的物理含义要分清楚。" },
     { "type": "annotate_circle", "id": "circle-formula", "cx": 460, "cy": 240, "rx": 110, "ry": 42, "color": "#ef4444", "width": 4, "duration": 900, "narration": "我把这个核心公式圈出来，它是整个力学的基石。" },
+    { "type": "wait", "id": "ask-understood", "message": "理解 F = ma 后，点击“下一步”继续。", "narration": "这里先停一下，大家确认一下 F 等于 m 乘以 a 有没有理解。" },
     { "type": "annotate_underline", "id": "hl-force", "x1": 87, "y1": 368, "x2": 210, "y2": 368, "color": "#f59e0b", "width": 4, "duration": 500, "narration": "合外力这个词要特别注意，是合力，不是某一个力。" },
     { "type": "annotate_underline", "id": "hl-accel", "x1": 370, "y1": 368, "x2": 510, "y2": 368, "color": "#22c55e", "width": 4, "duration": 500, "narration": "加速度 a 的方向始终与合外力方向一致。" },
     { "type": "clear_annotations", "duration": 400, "narration": "好，批注先清一下，我们继续推导。" }
@@ -412,23 +434,23 @@
 - 整体不是合法 JSON 对象。
 - 缺少 `canvas` 或 `commands`。
 - 命令缺少必填字段。
-- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas}` 之内。
+- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, clear_annotations, wait}` 之内。
 - 坐标不是 `[number, number]` 或数值字段类型错误。
 - `draw_path.points` 少于 2 个点。
 - `erase_object` 没有 `targetId` 或 `targetIds`。
 - `erase_area` 的矩形缺少 `width` / `height`，或圆形缺少 `radius`。
 - `duration` 不是数字。
 
-**v1.5 不支持** 的特性，请不要尝试生成：
+**v1.6 不支持** 的特性，请不要尝试生成：
 - `draw_rect` / `draw_circle`
 - 图片、SVG path、贝塞尔曲线
 - 修改/移动已绘制元素
-- 等待/延时命令、并行播放、循环
+- 延时命令、并行播放、循环
 - 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
 - 多人协作、保存/加载
 - 单独删除某一条批注（只能用 `clear_annotations` 清除整个批注图层）
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；划重点/批注 → 用 `annotate_underline` 或 `annotate_circle`，讲完后用 `clear_annotations` 清除。
+如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；划重点/批注 → 用 `annotate_underline` 或 `annotate_circle`，讲完后用 `clear_annotations` 清除；需要课堂停顿 → 用 `wait`。
 
 ---
 
@@ -439,8 +461,8 @@
 - [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
 - [ ] 顶层有 `canvas` 与 `commands`
 - [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, set_canvas}`
-- [ ] 每个绘制/遮罩对象都有合法 `id`；需要停顿的命令有合理 `duration`
+- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, clear_annotations, wait, set_canvas}`
+- [ ] 每个绘制/遮罩/批注对象都有合法 `id`；动画命令有合理 `duration`
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
 - [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端，方向没有写反
 - [ ] `draw_path.points` 至少包含两个合法坐标点，且顺序符合笔迹移动方向
@@ -449,6 +471,7 @@
 - [ ] `annotate_underline` 的 `x1/y1/x2/y2` 坐标准确定位在目标文字下方，不与其他元素重叠
 - [ ] `annotate_circle` 的 `cx/cy/rx/ry` 充分包裹目标区域（留足 20–30px 边距），圆心确为目标中心
 - [ ] 批注图层不会遮挡后续需要可见的主层内容；如需清除，已安排 `clear_annotations`
+- [ ] 关键概念后如需互动停顿，已安排 `wait`，且 `message` 简短明确
 - [ ] 文字按估算宽度不会溢出画布
 - [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
 - [ ] **大部分**绘制/擦除命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
