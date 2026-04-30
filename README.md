@@ -1,6 +1,6 @@
 # AI Whiteboard · JSON 命令式白板
 
-一个专门给 AI 调用的命令式白板工具。AI 通过生成 JSON 命令控制白板写字与画线，所有内容以"逐步出现"的动画过程呈现。
+一个专门给 AI 调用的命令式白板工具。AI 通过生成 JSON 命令控制白板写字与画线，所有内容以“逐步出现”的动画过程呈现。
 
 ## 功能（v1 MVP）
 
@@ -16,6 +16,7 @@
 
 - React 18 + TypeScript
 - Vite 构建
+- Express 生产服务
 - SVG 渲染（声明式动画 + 元素身份保留）
 - Tailwind CSS + shadcn/ui
 
@@ -23,23 +24,39 @@
 
 ```bash
 npm install
-npm run dev          # 开发服务器（含 Express 后端，本 MVP 暂未使用）
+npm run dev          # 开发服务器（Express + Vite）
+npm run build        # 构建前端和生产服务端到 dist/
+npm run start        # 启动生产服务，默认监听 5000 或 Railway 的 PORT
 npm run build:client # 仅构建前端到 dist/public
 ```
 
 ## 在 Railway 部署
 
-仓库已包含 `railway.json`与 `Staticfile`，使用 **Railpack** 构建器（Railway 当前默认，比 Nixpacks 更稳定）。在 Railway 上：
+仓库已包含 `railway.json`，使用 Railway 的 **Railpack** 构建器部署为 Node/Express 服务。
 
-1. **New Project → Deploy from GitHub repo**，选择本仓库
-2. Railpack 自动检测项目：安装 Node 依赖 → `npm run build:client` → 识别为静态站点（`Staticfile` 指向 `dist/public`）→ 自动启动 Caddy 托管
-3. 部署完成后在 **Settings → Networking → Generate Domain** 获取公开 URL
+Railway 会执行：
 
-不需要任何环境变量。`$PORT` 与 SPA fallback 都由 Railpack 自动处理。
+1. 安装 Node 依赖
+2. 运行 `npm run build`
+   - Vite 构建前端到 `dist/public`
+   - esbuild 构建 Express 服务到 `dist/index.cjs`
+3. 运行 `npm run start`
+   - Express 读取 Railway 注入的 `$PORT`
+   - 静态托管 `dist/public`
+   - 未命中的前端路由回退到 `index.html`
+
+部署步骤：
+
+1. Railway → **New Project** → **Deploy from GitHub repo**
+2. 选择本仓库
+3. 等待 Build / Deploy 完成
+4. 在 **Settings → Networking → Generate Domain** 生成公开 URL
+
+不需要配置环境变量。项目根目录的 `railway.json` 会覆盖 Railway Dashboard 中的 Build Command / Start Command。
 
 ## 项目结构
 
-```
+```text
 client/src/
 ├── App.tsx                            # 路由入口
 ├── pages/whiteboard.tsx               # 主界面（编辑器 + 画布 + 步骤指示）
@@ -48,4 +65,12 @@ client/src/
     ├── sampleScript.ts                # 内置示例脚本
     ├── WhiteboardCanvas.tsx           # SVG 渲染（自动按比例缩放）
     └── ScriptRunner.ts                # 逐步动画执行器（requestAnimationFrame）
+
+server/
+├── index.ts                           # Express 入口
+├── static.ts                          # 生产环境静态文件托管
+└── routes.ts                          # API 路由占位
+
+script/
+└── build.ts                           # 前端 + 服务端生产构建
 ```
