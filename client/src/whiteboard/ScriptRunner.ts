@@ -498,18 +498,19 @@ export class ScriptRunner {
 
   // ── Annotation layer ────────────────────────────────────────────────────────
 
-  /**
-   * Simple LCG seeded RNG so hand-drawn wobble is deterministic per element id.
-   * Same script always produces the same "hand-drawn" appearance.
-   */
-  private seededRng(seed: string): () => number {
-    let state = 0;
+  private seededRandom(seed: string): () => number {
+    let state = 2166136261;
     for (let i = 0; i < seed.length; i++) {
-      state = (state * 31 + seed.charCodeAt(i)) & 0x7fffffff;
+      state ^= seed.charCodeAt(i);
+      state = Math.imul(state, 16777619);
     }
+    state >>>= 0;
     return () => {
-      state = (state * 1664525 + 1013904223) & 0x7fffffff;
-      return state / 0x7fffffff;
+      state = Math.imul(state + 0x6d2b79f5, 1);
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
 
@@ -524,7 +525,7 @@ export class ScriptRunner {
     y2: number,
     seed: string,
   ): [number, number][] {
-    const rng = this.seededRng(seed);
+    const rng = this.seededRandom(seed);
     const len = Math.hypot(x2 - x1, y2 - y1);
     if (len === 0) return [[x1, y1]];
 
@@ -550,37 +551,77 @@ export class ScriptRunner {
     return points;
   }
 
-  /**
-   * Generate a hand-drawn loop/circle: an approximate ellipse path with slight
-   * radius jitter and a small overdraw at the close so it looks like a real pen
-   * circling something.
-   */
-  private generateHandDrawnEllipse(
-    cx: number,
-    cy: number,
-    rx: number,
-    ry: number,
-    seed: string,
-  ): [number, number][] {
-    const rng = this.seededRng(seed);
-    // Points spaced ~10px apart along perimeter (approx Ramanujan ellipse formula)
-    const perim = Math.PI * (3 * (rx + ry) - Math.sqrt((3 * rx + ry) * (rx + 3 * ry)));
-    const numPoints = Math.max(24, Math.round(perim / 10));
+  private generateSmoothCirclePoints({
+    cx,
+    cy,
+    rx,
+    ry,
+    seed,
+    pointCount = 16,
+    distortion = 0.025,
+  }: {
+    cx: number;
+    cy: number;
+    rx: number;
+    ry: number;
+    seed: string;
+    pointCount?: number;
+    distortion?: number;
+  }): [number, number][] {
+    const rng = this.seededRandom(seed);
+    const count = Math.max(12, Math.min(Math.round(pointCount), 18));
+    const amount = Math.max(0.015, Math.min(distortion, 0.04));
+    const phase = rng() * Math.PI * 2;
+    const harmonicA = 2 + Math.floor(rng() * 3);
+    const harmonicB = harmonicA + 1;
 
-    // Slight overdraw (loop past 360° by ~15°) for the "pen closes the circle" look
-    const startAngle = -0.25;
-    const totalAngle = Math.PI * 2 + 0.4;
+    return Array.from({ length: count }, (_, i) => {
+      const angle = (i / count) * Math.PI * 2;
+      const smoothNoise =
+        Math.sin(angle * harmonicA + phase) * 0.55 +
+        Math.cos(angle * harmonicB - phase * 0.7) * 0.45;
+      const radial = 1 + smoothNoise * amount;
+      return [
+        cx + rx * radial * Math.cos(angle),
+        cy + ry * radial * Math.sin(angle),
+      ];
+    });
+  }
 
-    const points: [number, number][] = [];
-    for (let i = 0; i <= numPoints; i++) {
-      const angle = startAngle + totalAngle * (i / numPoints);
-      // Radius jitter: ±4% per point
-      const jitter = 1 + (rng() - 0.5) * 0.08;
-      const x = cx + rx * jitter * Math.cos(angle);
-      const y = cy + ry * jitter * Math.sin(angle);
-      points.push([x, y]);
+  private catmullRomClosedPath(points: [number, number][]) {
+    if (points.length === 0) return "";
+    if (points.length === 1) return `M ${points[0][0]} ${points[0][1]} Z`;
+
+    const commands = [`M ${points[0][0]} ${points[0][1]}`];
+    const count = points.length;
+    for (let i = 0; i < count; i++) {
+      const p0 = points[(i - 1 + count) % count];
+      const p1 = points[i];
+      const p2 = points[(i + 1) % count];
+      const p3 = points[(i + 2) % count];
+      const c1: [number, number] = [
+        p1[0] + (p2[0] - p0[0]) / 6,
+        p1[1] + (p2[1] - p0[1]) / 6,
+      ];
+      const c2: [number, number] = [
+        p2[0] - (p3[0] - p1[0]) / 6,
+        p2[1] - (p3[1] - p1[1]) / 6,
+      ];
+      commands.push(`C ${c1[0]} ${c1[1]} ${c2[0]} ${c2[1]} ${p2[0]} ${p2[1]}`);
     }
-    return points;
+    commands.push("Z");
+    return commands.join(" ");
+  }
+
+  private estimateClosedPathLength(points: [number, number][]) {
+    if (points.length < 2) return 0;
+    let length = 0;
+    for (let i = 0; i < points.length; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[(i + 1) % points.length];
+      length += Math.hypot(x2 - x1, y2 - y1);
+    }
+    return length;
   }
 
   /**
@@ -668,6 +709,56 @@ export class ScriptRunner {
     });
   }
 
+  private animateClosedAnnotationPath(
+    id: string,
+    points: [number, number][],
+    color: string,
+    width: number,
+    duration: number,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const annIndex = this.annotations.length;
+      const pathD = this.catmullRomClosedPath(points);
+      const pathLength = Math.max(this.estimateClosedPathLength(points) * 1.15, 1);
+      this.annotations.push({
+        kind: "annotation",
+        id,
+        points,
+        currentPoints: points,
+        pathD,
+        strokeDasharray: pathLength,
+        strokeDashoffset: pathLength,
+        color,
+        width,
+      });
+      this.commitAnnotations();
+
+      const dur = this.durationFor(duration);
+      const start = performance.now();
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / dur, 1);
+        const target = this.annotations[annIndex];
+        if (target && target.kind === "annotation") {
+          target.strokeDashoffset = pathLength * (1 - t);
+          this.commitAnnotations();
+        }
+
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
   private animateAnnotateUnderline(
     cmd: Extract<WhiteboardCommand, { type: "annotate_underline" }>,
   ) {
@@ -690,14 +781,16 @@ export class ScriptRunner {
   private animateAnnotateCircle(
     cmd: Extract<WhiteboardCommand, { type: "annotate_circle" }>,
   ) {
-    const points = this.generateHandDrawnEllipse(
-      cmd.cx,
-      cmd.cy,
-      cmd.rx,
-      cmd.ry,
-      cmd.id,
-    );
-    return this.animateAnnotationPath(
+    const points = this.generateSmoothCirclePoints({
+      cx: cmd.cx,
+      cy: cmd.cy,
+      rx: cmd.rx,
+      ry: cmd.ry,
+      seed: cmd.id,
+      pointCount: 16,
+      distortion: 0.025,
+    });
+    return this.animateClosedAnnotationPath(
       cmd.id,
       points,
       cmd.color ?? "#ef4444",

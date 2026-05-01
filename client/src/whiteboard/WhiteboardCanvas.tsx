@@ -170,18 +170,35 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
 
         {/* Annotation overlay — rendered on top of all main content */}
         <g data-testid="annotation-layer">
-          {annotations.map((ann) => (
-            <polyline
-              key={ann.id}
-              points={ann.currentPoints.map(([x, y]) => `${x},${y}`).join(" ")}
-              fill="none"
-              stroke={ann.color}
-              strokeWidth={ann.width}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              data-testid={`annotation-${ann.id}`}
-            />
-          ))}
+          {annotations.map((ann) =>
+            ann.pathD ? (
+              <path
+                key={ann.id}
+                d={ann.pathD}
+                fill="none"
+                stroke={ann.color}
+                strokeWidth={ann.width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+                strokeDasharray={ann.strokeDasharray}
+                strokeDashoffset={ann.strokeDashoffset}
+                data-testid={`annotation-${ann.id}`}
+              />
+            ) : (
+              <polyline
+                key={ann.id}
+                points={ann.currentPoints.map(([x, y]) => `${x},${y}`).join(" ")}
+                fill="none"
+                stroke={ann.color}
+                strokeWidth={ann.width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+                data-testid={`annotation-${ann.id}`}
+              />
+            ),
+          )}
         </g>
       </svg>
     </div>

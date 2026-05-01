@@ -212,10 +212,14 @@ export type RenderedElement =
 export interface AnnotationElement {
   kind: "annotation";
   id: string;
-  /** Full generated hand-drawn path points */
+  /** Full generated annotation points */
   points: [number, number][];
   /** Incrementally revealed points during animation */
   currentPoints: [number, number][];
+  /** Optional smooth SVG path for high-quality closed annotations. */
+  pathD?: string;
+  strokeDasharray?: number;
+  strokeDashoffset?: number;
   color: string;
   width: number;
 }
