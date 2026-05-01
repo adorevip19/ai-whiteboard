@@ -93,12 +93,18 @@ export class ScriptRunner {
         const cmd = this.script.commands[i];
         const narration =
           cmd.type === "write_text" ||
+          cmd.type === "write_text_segments" ||
           cmd.type === "write_math" ||
           cmd.type === "write_math_steps" ||
           cmd.type === "write_division_layout" ||
           cmd.type === "draw_line" ||
           cmd.type === "draw_arrow" ||
           cmd.type === "draw_path" ||
+          cmd.type === "draw_rectangle" ||
+          cmd.type === "draw_triangle" ||
+          cmd.type === "draw_circle" ||
+          cmd.type === "draw_arc_arrow" ||
+          cmd.type === "draw_brace" ||
           cmd.type === "erase_object" ||
           cmd.type === "erase_area" ||
           cmd.type === "clear_canvas" ||
@@ -107,6 +113,7 @@ export class ScriptRunner {
           cmd.type === "annotate_circle" ||
           cmd.type === "annotate_object" ||
           cmd.type === "annotate_math_bbox" ||
+          cmd.type === "emphasize_text" ||
           cmd.type === "clear_annotations"
             ? (cmd.narration ?? null)
             : null;
@@ -165,9 +172,35 @@ export class ScriptRunner {
   private estimateTextWidth(text: string, fontSize: number) {
     let width = 0;
     for (const char of Array.from(text)) {
-      width += /[\u4e00-\u9fff]/.test(char) ? fontSize : fontSize * 0.58;
+      width += /[一-鿿]/.test(char) ? fontSize : fontSize * 0.58;
     }
     return Math.max(width, fontSize);
+  }
+
+  private reflowTextSegments(el: Extract<RenderedElement, { kind: "text_segments" }>) {
+    let cursorX = el.x;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const segment of el.segments) {
+      const width = this.estimateTextWidth(segment.text, segment.fontSize);
+      segment.x = cursorX;
+      segment.y = el.y;
+      segment.bbox = {
+        x: cursorX,
+        y: el.y - segment.fontSize,
+        width,
+        height: segment.fontSize * 1.25,
+      };
+      cursorX += width;
+      minY = Math.min(minY, segment.bbox.y);
+      maxY = Math.max(maxY, segment.bbox.y + segment.bbox.height);
+    }
+    el.bbox = {
+      x: el.x,
+      y: Number.isFinite(minY) ? minY : el.y - el.fontSize,
+      width: Math.max(cursorX - el.x, el.fontSize),
+      height: Number.isFinite(maxY - minY) ? maxY - minY : el.fontSize * 1.25,
+    };
   }
 
   private estimateLatexWidth(latex: string, fontSize: number, displayMode = false) {
@@ -194,6 +227,129 @@ export class ScriptRunner {
     };
   }
 
+  private pathBBox(points: [number, number][], padding = 0): ElementBBox {
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    return {
+      x: Math.min(...xs) - padding,
+      y: Math.min(...ys) - padding,
+      width: Math.max(...xs) - Math.min(...xs) + padding * 2,
+      height: Math.max(...ys) - Math.min(...ys) + padding * 2,
+    };
+  }
+
+  private angleToPoint(cx: number, cy: number, radius: number, angle: number): [number, number] {
+    const radians = (angle * Math.PI) / 180;
+    return [cx + Math.cos(radians) * radius, cy + Math.sin(radians) * radius];
+  }
+
+  private arcSweep(startAngle: number, endAngle: number, clockwise: boolean) {
+    let sweep = endAngle - startAngle;
+    if (clockwise) {
+      while (sweep <= 0) sweep += 360;
+      return Math.min(sweep, 359.9);
+    }
+    while (sweep >= 0) sweep -= 360;
+    return Math.max(sweep, -359.9);
+  }
+
+  private arcPath(cx: number, cy: number, radius: number, startAngle: number, sweep: number) {
+    const start = this.angleToPoint(cx, cy, radius, startAngle);
+    const end = this.angleToPoint(cx, cy, radius, startAngle + sweep);
+    const largeArc = Math.abs(sweep) > 180 ? 1 : 0;
+    const sweepFlag = sweep > 0 ? 1 : 0;
+    return `M ${start[0]} ${start[1]} A ${radius} ${radius} 0 ${largeArc} ${sweepFlag} ${end[0]} ${end[1]}`;
+  }
+
+  private rectanglePath(x: number, y: number, width: number, height: number, radius = 0) {
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    if (r === 0) {
+      return `M ${x} ${y} H ${x + width} V ${y + height} H ${x} Z`;
+    }
+    return [
+      `M ${x + r} ${y}`,
+      `H ${x + width - r}`,
+      `Q ${x + width} ${y} ${x + width} ${y + r}`,
+      `V ${y + height - r}`,
+      `Q ${x + width} ${y + height} ${x + width - r} ${y + height}`,
+      `H ${x + r}`,
+      `Q ${x} ${y + height} ${x} ${y + height - r}`,
+      `V ${y + r}`,
+      `Q ${x} ${y} ${x + r} ${y}`,
+      "Z",
+    ].join(" ");
+  }
+
+  private circlePath(cx: number, cy: number, radius: number) {
+    return [
+      `M ${cx + radius} ${cy}`,
+      `A ${radius} ${radius} 0 1 1 ${cx - radius} ${cy}`,
+      `A ${radius} ${radius} 0 1 1 ${cx + radius} ${cy}`,
+      "Z",
+    ].join(" ");
+  }
+
+  private bracePath(
+    from: [number, number],
+    to: [number, number],
+    orientation: "left" | "right" | "up" | "down",
+    depth: number,
+  ) {
+    const [x1, y1] = from;
+    const [x2, y2] = to;
+    if (orientation === "left" || orientation === "right") {
+      const sign = orientation === "right" ? 1 : -1;
+      const topY = Math.min(y1, y2);
+      const bottomY = Math.max(y1, y2);
+      const x = (x1 + x2) / 2;
+      const h = Math.max(bottomY - topY, 1);
+      const midY = topY + h / 2;
+      const q = h / 4;
+      const d = Math.max(depth, 1);
+      return [
+        `M ${x} ${topY}`,
+        `C ${x + sign * d} ${topY} ${x + sign * d} ${topY + q * 0.45} ${x + sign * d * 0.45} ${topY + q}`,
+        `C ${x + sign * d * 0.12} ${topY + q * 1.45} ${x + sign * d * 0.12} ${midY - q * 0.35} ${x} ${midY}`,
+        `C ${x + sign * d * 0.12} ${midY + q * 0.35} ${x + sign * d * 0.12} ${bottomY - q * 1.45} ${x + sign * d * 0.45} ${bottomY - q}`,
+        `C ${x + sign * d} ${bottomY - q * 0.45} ${x + sign * d} ${bottomY} ${x} ${bottomY}`,
+      ].join(" ");
+    }
+
+    const sign = orientation === "down" ? 1 : -1;
+    const leftX = Math.min(x1, x2);
+    const rightX = Math.max(x1, x2);
+    const y = (y1 + y2) / 2;
+    const w = Math.max(rightX - leftX, 1);
+    const midX = leftX + w / 2;
+    const q = w / 4;
+    const d = Math.max(depth, 1);
+    return [
+      `M ${leftX} ${y}`,
+      `C ${leftX} ${y + sign * d} ${leftX + q * 0.45} ${y + sign * d} ${leftX + q} ${y + sign * d * 0.45}`,
+      `C ${leftX + q * 1.45} ${y + sign * d * 0.12} ${midX - q * 0.35} ${y + sign * d * 0.12} ${midX} ${y}`,
+      `C ${midX + q * 0.35} ${y + sign * d * 0.12} ${rightX - q * 1.45} ${y + sign * d * 0.12} ${rightX - q} ${y + sign * d * 0.45}`,
+      `C ${rightX - q * 0.45} ${y + sign * d} ${rightX} ${y + sign * d} ${rightX} ${y}`,
+    ].join(" ");
+  }
+
+  private resolveTextTarget(targetId: string, segmentId?: string) {
+    const el = this.elements.find((item) => item.id === targetId);
+    if (!el) return null;
+    if (el.kind === "text_segments") {
+      if (!segmentId) {
+        return { element: el, segment: undefined, bbox: el.bbox, text: el.segments.map((s) => s.text).join("") };
+      }
+      const segment = el.segments.find((item) => item.id === segmentId);
+      if (!segment) return null;
+      return { element: el, segment, bbox: segment.bbox, text: segment.text };
+    }
+    if (segmentId) return null;
+    if (el.kind === "text") {
+      return { element: el, segment: undefined, bbox: el.bbox, text: el.text };
+    }
+    return null;
+  }
+
   private runCommand(cmd: WhiteboardCommand): Promise<void> {
     if (cmd.type === "set_canvas") {
       this.canvas = {
@@ -206,6 +362,9 @@ export class ScriptRunner {
     }
     if (cmd.type === "write_text") {
       return this.animateText(cmd);
+    }
+    if (cmd.type === "write_text_segments") {
+      return this.animateTextSegments(cmd);
     }
     if (cmd.type === "write_math") {
       return this.animateMath(cmd);
@@ -224,6 +383,21 @@ export class ScriptRunner {
     }
     if (cmd.type === "draw_path") {
       return this.animatePath(cmd);
+    }
+    if (cmd.type === "draw_rectangle") {
+      return this.animateRectangle(cmd);
+    }
+    if (cmd.type === "draw_triangle") {
+      return this.animateTriangle(cmd);
+    }
+    if (cmd.type === "draw_circle") {
+      return this.animateCircle(cmd);
+    }
+    if (cmd.type === "draw_arc_arrow") {
+      return this.animateArcArrow(cmd);
+    }
+    if (cmd.type === "draw_brace") {
+      return this.animateBrace(cmd);
     }
     if (cmd.type === "erase_object") {
       return this.eraseObject(cmd);
@@ -249,6 +423,9 @@ export class ScriptRunner {
     if (cmd.type === "annotate_math_bbox") {
       return this.animateAnnotateMathBbox(cmd);
     }
+    if (cmd.type === "emphasize_text") {
+      return this.emphasizeText(cmd);
+    }
     if (cmd.type === "clear_annotations") {
       return this.clearAnnotations(cmd);
     }
@@ -271,6 +448,7 @@ export class ScriptRunner {
         y: cmd.y,
         fontSize: cmd.fontSize,
         color: cmd.color ?? "#111111",
+        fontWeight: cmd.bold ? 700 : undefined,
         bbox: {
           x: cmd.x,
           y: cmd.y - cmd.fontSize,
@@ -307,6 +485,87 @@ export class ScriptRunner {
           // Ensure final state is exact.
           if (target && target.kind === "text") {
             target.text = cmd.text;
+            this.commit();
+          }
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateTextSegments(
+    cmd: Extract<WhiteboardCommand, { type: "write_text_segments" }>,
+  ) {
+    return new Promise<void>((resolve) => {
+      const elIndex = this.elements.length;
+      const element: Extract<RenderedElement, { kind: "text_segments" }> = {
+        kind: "text_segments",
+        id: cmd.id,
+        x: cmd.x,
+        y: cmd.y,
+        fontSize: cmd.fontSize,
+        color: cmd.color ?? "#111111",
+        segments: cmd.segments.map((segment) => ({
+          id: segment.id,
+          text: segment.text,
+          visibleText: "",
+          x: cmd.x,
+          y: cmd.y,
+          fontSize: segment.fontSize ?? cmd.fontSize,
+          color: segment.color ?? cmd.color ?? "#111111",
+          fontWeight: segment.bold ? 700 : undefined,
+          bbox: {
+            x: cmd.x,
+            y: cmd.y - (segment.fontSize ?? cmd.fontSize),
+            width: this.estimateTextWidth(segment.text, segment.fontSize ?? cmd.fontSize),
+            height: (segment.fontSize ?? cmd.fontSize) * 1.25,
+          },
+        })),
+        bbox: {
+          x: cmd.x,
+          y: cmd.y - cmd.fontSize,
+          width: cmd.fontSize,
+          height: cmd.fontSize * 1.25,
+        },
+      };
+      this.reflowTextSegments(element);
+      this.elements.push(element);
+      this.commit();
+
+      const segmentChars = element.segments.map((segment) => Array.from(segment.text));
+      const total = segmentChars.reduce((sum, chars) => sum + chars.length, 0);
+      if (total === 0) {
+        resolve();
+        return;
+      }
+      const duration = this.durationFor(cmd.duration);
+      const start = performance.now();
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        let remaining = Math.max(1, Math.ceil(t * total));
+        const target = this.elements[elIndex];
+        if (target && target.kind === "text_segments") {
+          target.segments.forEach((segment, index) => {
+            const chars = segmentChars[index] ?? [];
+            const count = Math.min(chars.length, remaining);
+            segment.visibleText = chars.slice(0, count).join("");
+            remaining -= count;
+          });
+          this.commit();
+        }
+        if (t >= 1) {
+          if (target && target.kind === "text_segments") {
+            target.segments.forEach((segment) => {
+              segment.visibleText = segment.text;
+            });
             this.commit();
           }
           resolve();
@@ -676,6 +935,184 @@ export class ScriptRunner {
 
       this.currentRaf = requestAnimationFrame(tick);
     });
+  }
+
+  private animateShape(
+    element: Extract<RenderedElement, { kind: "shape" }>,
+    durationMs: number,
+    update?: (progress: number) => void,
+  ) {
+    return new Promise<void>((resolve) => {
+      const elIndex = this.elements.length;
+      this.elements.push(element);
+      this.commit();
+
+      const duration = this.durationFor(durationMs);
+      const start = performance.now();
+
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "shape") {
+          target.progress = t;
+          update?.(t);
+          this.commit();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateRectangle(
+    cmd: Extract<WhiteboardCommand, { type: "draw_rectangle" }>,
+  ) {
+    const strokeWidth = cmd.strokeWidth ?? 2;
+    return this.animateShape(
+      {
+        kind: "shape",
+        id: cmd.id,
+        shapeType: "rectangle",
+        pathD: this.rectanglePath(cmd.x, cmd.y, cmd.width, cmd.height, cmd.radius ?? 0),
+        color: cmd.color ?? "#111111",
+        width: strokeWidth,
+        fill: cmd.fill,
+        fillOpacity: cmd.fillOpacity ?? 0.12,
+        progress: 0,
+        bbox: {
+          x: cmd.x - strokeWidth / 2,
+          y: cmd.y - strokeWidth / 2,
+          width: cmd.width + strokeWidth,
+          height: cmd.height + strokeWidth,
+        },
+      },
+      cmd.duration,
+    );
+  }
+
+  private animateTriangle(
+    cmd: Extract<WhiteboardCommand, { type: "draw_triangle" }>,
+  ) {
+    const points = cmd.points;
+    const strokeWidth = cmd.strokeWidth ?? 2;
+    const pathD = `M ${points[0][0]} ${points[0][1]} L ${points[1][0]} ${points[1][1]} L ${points[2][0]} ${points[2][1]} Z`;
+    return this.animateShape(
+      {
+        kind: "shape",
+        id: cmd.id,
+        shapeType: "triangle",
+        pathD,
+        color: cmd.color ?? "#111111",
+        width: strokeWidth,
+        fill: cmd.fill,
+        fillOpacity: cmd.fillOpacity ?? 0.12,
+        progress: 0,
+        bbox: this.pathBBox(points, strokeWidth / 2),
+      },
+      cmd.duration,
+    );
+  }
+
+  private animateCircle(cmd: Extract<WhiteboardCommand, { type: "draw_circle" }>) {
+    const strokeWidth = cmd.strokeWidth ?? 2;
+    return this.animateShape(
+      {
+        kind: "shape",
+        id: cmd.id,
+        shapeType: "circle",
+        pathD: this.circlePath(cmd.cx, cmd.cy, cmd.radius),
+        color: cmd.color ?? "#111111",
+        width: strokeWidth,
+        fill: cmd.fill,
+        fillOpacity: cmd.fillOpacity ?? 0.12,
+        progress: 0,
+        bbox: {
+          x: cmd.cx - cmd.radius - strokeWidth / 2,
+          y: cmd.cy - cmd.radius - strokeWidth / 2,
+          width: cmd.radius * 2 + strokeWidth,
+          height: cmd.radius * 2 + strokeWidth,
+        },
+      },
+      cmd.duration,
+    );
+  }
+
+  private animateArcArrow(
+    cmd: Extract<WhiteboardCommand, { type: "draw_arc_arrow" }>,
+  ) {
+    const clockwise = cmd.clockwise ?? true;
+    const sweep = this.arcSweep(cmd.startAngle, cmd.endAngle, clockwise);
+    const width = cmd.width ?? 3;
+    const headSize = cmd.headSize ?? Math.max(width * 4, 12);
+    const headAngle = cmd.headAngle ?? 28;
+    const element: Extract<RenderedElement, { kind: "shape" }> = {
+      kind: "shape",
+      id: cmd.id,
+      shapeType: "arc_arrow",
+      pathD: this.arcPath(cmd.cx, cmd.cy, cmd.radius, cmd.startAngle, sweep),
+      color: cmd.color ?? "#111111",
+      width,
+      progress: 0,
+      bbox: {
+        x: cmd.cx - cmd.radius - headSize,
+        y: cmd.cy - cmd.radius - headSize,
+        width: cmd.radius * 2 + headSize * 2,
+        height: cmd.radius * 2 + headSize * 2,
+      },
+      arrowHead: {
+        tip: this.angleToPoint(cmd.cx, cmd.cy, cmd.radius, cmd.startAngle),
+        angle: 0,
+        size: headSize,
+        headAngle,
+        visible: false,
+      },
+    };
+
+    return this.animateShape(element, cmd.duration, (progress) => {
+      const currentAngle = cmd.startAngle + sweep * progress;
+      if (!element.arrowHead) return;
+      element.arrowHead.tip = this.angleToPoint(cmd.cx, cmd.cy, cmd.radius, currentAngle);
+      element.arrowHead.angle =
+        ((currentAngle + (clockwise ? 90 : -90)) * Math.PI) / 180;
+      element.arrowHead.visible = progress > 0.04;
+    });
+  }
+
+  private animateBrace(cmd: Extract<WhiteboardCommand, { type: "draw_brace" }>) {
+    const width = cmd.width ?? 3;
+    const depth =
+      cmd.depth ??
+      Math.max(
+        18,
+        Math.min(Math.hypot(cmd.to[0] - cmd.from[0], cmd.to[1] - cmd.from[1]) * 0.16, 48),
+      );
+    const pathD = this.bracePath(cmd.from, cmd.to, cmd.orientation, depth);
+    const bbox =
+      cmd.orientation === "left" || cmd.orientation === "right"
+        ? this.pathBBox([cmd.from, cmd.to], depth + width)
+        : this.pathBBox([cmd.from, cmd.to], depth + width);
+    return this.animateShape(
+      {
+        kind: "shape",
+        id: cmd.id,
+        shapeType: "brace",
+        pathD,
+        color: cmd.color ?? "#111111",
+        width,
+        progress: 0,
+        bbox,
+      },
+      cmd.duration,
+    );
   }
 
   private async eraseObject(
@@ -1126,6 +1563,125 @@ export class ScriptRunner {
       width: cmd.width ?? 3,
       duration: cmd.duration,
     });
+  }
+
+  private animateEmphasisDots(
+    id: string,
+    bbox: ElementBBox,
+    text: string,
+    color: string,
+    width: number,
+    duration: number,
+  ) {
+    return new Promise<void>((resolve) => {
+      const chars = Math.max(1, Array.from(text).filter((char) => char.trim()).length);
+      const layoutCount = Math.max(1, Math.floor(bbox.width / Math.max(bbox.height * 0.45, 10)));
+      const count = chars <= 8 ? chars : Math.min(chars, layoutCount);
+      const radius = Math.max(1.4, Math.min(width, bbox.height * 0.08));
+      const y = bbox.y + bbox.height + radius * 2.4;
+      const dots = Array.from({ length: count }, (_, index) => ({
+        cx: bbox.x + (bbox.width * (index + 0.5)) / count,
+        cy: y,
+        r: radius,
+      }));
+      const annIndex = this.annotations.length;
+      this.annotations.push({
+        kind: "emphasis_dots",
+        id,
+        dots,
+        visibleCount: 0,
+        color,
+      });
+      this.commitAnnotations();
+
+      const runDuration = this.durationFor(duration);
+      const start = performance.now();
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / runDuration, 1);
+        const target = this.annotations[annIndex];
+        if (target && target.kind === "emphasis_dots") {
+          target.visibleCount = Math.ceil(t * dots.length);
+          this.commitAnnotations();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private async emphasizeText(
+    cmd: Extract<WhiteboardCommand, { type: "emphasize_text" }>,
+  ) {
+    const target = this.resolveTextTarget(cmd.targetId, cmd.segmentId);
+    if (!target) {
+      return Promise.reject(
+        new Error(
+          `emphasize_text 找不到目标文字: ${cmd.targetId}${cmd.segmentId ? `.${cmd.segmentId}` : ""}`,
+        ),
+      );
+    }
+
+    if (cmd.style === "underline") {
+      return this.annotateBBox({
+        id: cmd.id,
+        bbox: target.bbox,
+        style: "underline",
+        padding: cmd.padding ?? 2,
+        color: cmd.color ?? "#2563eb",
+        width: cmd.width ?? (target.bbox.height < 32 ? 2 : 3),
+        duration: cmd.duration,
+      });
+    }
+
+    if (cmd.style === "dot") {
+      return this.animateEmphasisDots(
+        cmd.id,
+        this.expandBBox(target.bbox, cmd.padding ?? 0),
+        target.text,
+        cmd.color ?? "#2563eb",
+        cmd.width ?? (target.bbox.height < 32 ? 2 : 3),
+        cmd.duration,
+      );
+    }
+
+    if (target.element.kind === "text_segments" && target.segment) {
+      if (cmd.style === "bold") target.segment.fontWeight = 700;
+      if (cmd.style === "color") target.segment.color = cmd.color ?? "#2563eb";
+      if (cmd.style === "font_size" && cmd.fontSize) {
+        target.segment.fontSize = cmd.fontSize;
+        this.reflowTextSegments(target.element);
+      }
+      this.commit();
+      await this.wait(cmd.duration);
+      return;
+    }
+
+    if (target.element.kind === "text") {
+      if (cmd.style === "bold") target.element.fontWeight = 700;
+      if (cmd.style === "color") target.element.color = cmd.color ?? "#2563eb";
+      if (cmd.style === "font_size" && cmd.fontSize) {
+        target.element.fontSize = cmd.fontSize;
+        target.element.bbox = {
+          x: target.element.x,
+          y: target.element.y - cmd.fontSize,
+          width: this.estimateTextWidth(target.element.text, cmd.fontSize),
+          height: cmd.fontSize * 1.25,
+        };
+      }
+      this.commit();
+      await this.wait(cmd.duration);
+      return;
+    }
+
+    await this.wait(cmd.duration);
   }
 
   private async clearAnnotations(

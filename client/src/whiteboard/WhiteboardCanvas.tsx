@@ -2,7 +2,11 @@
 // shape elements (text/lines) keep their identity, can be cleanly animated,
 // and re-render declaratively from React state.
 import { useEffect, useRef, useState } from "react";
-import type { AnnotationElement, CanvasConfig, RenderedElement } from "./commandTypes";
+import type {
+  AnnotationElement,
+  CanvasConfig,
+  RenderedElement,
+} from "./commandTypes";
 import { MathRenderer } from "./MathRenderer";
 
 interface Props {
@@ -11,7 +15,11 @@ interface Props {
   annotations: AnnotationElement[];
 }
 
-export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
+export function WhiteboardCanvas({
+  canvas,
+  elements,
+  annotations,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
 
@@ -151,6 +159,31 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
               </g>
             );
           }
+          if (el.kind === "text_segments") {
+            return (
+              <g key={el.id} data-testid={`text-segments-${el.id}`}>
+                {el.segments.map((segment, index) => (
+                  <text
+                    key={segment.id ?? `${el.id}-${index}`}
+                    x={segment.x}
+                    y={segment.y}
+                    fontSize={segment.fontSize}
+                    fill={segment.color}
+                    fontWeight={segment.fontWeight}
+                    fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
+                    dominantBaseline="alphabetic"
+                    data-testid={
+                      segment.id
+                        ? `text-segment-${el.id}-${segment.id}`
+                        : `text-segment-${el.id}-${index}`
+                    }
+                  >
+                    {segment.visibleText}
+                  </text>
+                ))}
+              </g>
+            );
+          }
           if (el.kind === "line") {
             return (
               <line
@@ -224,6 +257,56 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
               />
             );
           }
+          if (el.kind === "shape") {
+            const arrow = el.arrowHead;
+            let arrowPoints = "";
+            if (arrow?.visible) {
+              const angle = (arrow.headAngle * Math.PI) / 180;
+              const ux = Math.cos(arrow.angle);
+              const uy = Math.sin(arrow.angle);
+              const cos = Math.cos(angle);
+              const sin = Math.sin(angle);
+              const [x, y] = arrow.tip;
+              const left: [number, number] = [
+                x - arrow.size * (ux * cos - uy * sin),
+                y - arrow.size * (uy * cos + ux * sin),
+              ];
+              const right: [number, number] = [
+                x - arrow.size * (ux * cos + uy * sin),
+                y - arrow.size * (uy * cos - ux * sin),
+              ];
+              arrowPoints = `${left[0]},${left[1]} ${x},${y} ${right[0]},${right[1]}`;
+            }
+
+            return (
+              <g key={el.id} data-testid={`shape-${el.id}`}>
+                <path
+                  d={el.pathD}
+                  fill={el.fill ?? "none"}
+                  fillOpacity={el.fill ? (el.progress >= 1 ? el.fillOpacity ?? 0.12 : 0) : 0}
+                  stroke={el.color}
+                  strokeWidth={el.width}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                  pathLength={1}
+                  strokeDasharray={1}
+                  strokeDashoffset={1 - el.progress}
+                />
+                {arrow?.visible ? (
+                  <polyline
+                    points={arrowPoints}
+                    fill="none"
+                    stroke={el.color}
+                    strokeWidth={el.width}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
+              </g>
+            );
+          }
           if (el.kind === "eraser") {
             if (el.shape === "circle") {
               return (
@@ -257,6 +340,7 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
               y={el.y}
               fontSize={el.fontSize}
               fill={el.color}
+              fontWeight={el.fontWeight}
               fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
               dominantBaseline="alphabetic"
               data-testid={`text-${el.id}`}
@@ -269,7 +353,20 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
         {/* Annotation overlay — rendered on top of all main content */}
         <g data-testid="annotation-layer">
           {annotations.map((ann) =>
-            ann.pathD ? (
+            ann.kind === "emphasis_dots" ? (
+              <g key={ann.id} data-testid={`annotation-${ann.id}`}>
+                {ann.dots.slice(0, ann.visibleCount).map((dot, index) => (
+                  <circle
+                    key={`${ann.id}-${index}`}
+                    cx={dot.cx}
+                    cy={dot.cy}
+                    r={dot.r}
+                    fill={ann.color}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </g>
+            ) : ann.pathD ? (
               <path
                 key={ann.id}
                 d={ann.pathD}

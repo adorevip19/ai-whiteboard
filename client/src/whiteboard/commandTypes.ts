@@ -16,6 +16,27 @@ export interface WriteTextCommand {
   y: number;
   fontSize: number;
   color?: string;
+  bold?: boolean;
+  duration: number;
+  narration?: string;
+}
+
+export interface WriteTextSegment {
+  id?: string;
+  text: string;
+  color?: string;
+  fontSize?: number;
+  bold?: boolean;
+}
+
+export interface WriteTextSegmentsCommand {
+  type: "write_text_segments";
+  id: string;
+  segments: WriteTextSegment[];
+  x: number;
+  y: number;
+  fontSize: number;
+  color?: string;
   duration: number;
   narration?: string;
 }
@@ -90,6 +111,78 @@ export interface DrawPathCommand {
   type: "draw_path";
   id: string;
   points: [number, number][];
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface DrawRectangleCommand {
+  type: "draw_rectangle";
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius?: number;
+  color?: string;
+  strokeWidth?: number;
+  fill?: string;
+  fillOpacity?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface DrawTriangleCommand {
+  type: "draw_triangle";
+  id: string;
+  points: [[number, number], [number, number], [number, number]];
+  color?: string;
+  strokeWidth?: number;
+  fill?: string;
+  fillOpacity?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface DrawCircleCommand {
+  type: "draw_circle";
+  id: string;
+  cx: number;
+  cy: number;
+  radius: number;
+  color?: string;
+  strokeWidth?: number;
+  fill?: string;
+  fillOpacity?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface DrawArcArrowCommand {
+  type: "draw_arc_arrow";
+  id: string;
+  cx: number;
+  cy: number;
+  radius: number;
+  startAngle: number;
+  endAngle: number;
+  clockwise?: boolean;
+  color?: string;
+  width?: number;
+  headSize?: number;
+  headAngle?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface DrawBraceCommand {
+  type: "draw_brace";
+  id: string;
+  from: [number, number];
+  to: [number, number];
+  orientation: "left" | "right" | "up" | "down";
+  depth?: number;
   color?: string;
   width?: number;
   duration: number;
@@ -197,6 +290,20 @@ export interface AnnotateMathBboxCommand {
   narration?: string;
 }
 
+export interface EmphasizeTextCommand {
+  type: "emphasize_text";
+  id: string;
+  targetId: string;
+  segmentId?: string;
+  style: "bold" | "color" | "font_size" | "underline" | "dot";
+  color?: string;
+  fontSize?: number;
+  width?: number;
+  padding?: number;
+  duration: number;
+  narration?: string;
+}
+
 export interface ClearAnnotationsCommand {
   type: "clear_annotations";
   duration?: number;
@@ -206,12 +313,18 @@ export interface ClearAnnotationsCommand {
 export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
+  | WriteTextSegmentsCommand
   | WriteMathCommand
   | WriteMathStepsCommand
   | WriteDivisionLayoutCommand
   | DrawLineCommand
   | DrawArrowCommand
   | DrawPathCommand
+  | DrawRectangleCommand
+  | DrawTriangleCommand
+  | DrawCircleCommand
+  | DrawArcArrowCommand
+  | DrawBraceCommand
   | EraseObjectCommand
   | EraseAreaCommand
   | ClearCanvasCommand
@@ -220,6 +333,7 @@ export type WhiteboardCommand =
   | AnnotateCircleCommand
   | AnnotateObjectCommand
   | AnnotateMathBboxCommand
+  | EmphasizeTextCommand
   | ClearAnnotationsCommand;
 
 export interface CanvasConfig {
@@ -240,6 +354,18 @@ export interface ElementBBox {
   height: number;
 }
 
+export interface RenderedTextSegment {
+  id?: string;
+  text: string;
+  visibleText: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+  fontWeight?: number;
+  bbox: ElementBBox;
+}
+
 // Rendered element state (snapshot kept on the canvas)
 export type RenderedElement =
   | {
@@ -250,8 +376,19 @@ export type RenderedElement =
       y: number;
       fontSize: number;
       color: string;
+      fontWeight?: number;
       bbox: ElementBBox;
       opacity?: number;
+    }
+  | {
+      kind: "text_segments";
+      id: string;
+      x: number;
+      y: number;
+      fontSize: number;
+      color: string;
+      segments: RenderedTextSegment[];
+      bbox: ElementBBox;
     }
   | {
       kind: "math";
@@ -326,6 +463,25 @@ export type RenderedElement =
       bbox: ElementBBox;
     }
   | {
+      kind: "shape";
+      id: string;
+      shapeType: "rectangle" | "triangle" | "circle" | "arc_arrow" | "brace";
+      pathD: string;
+      color: string;
+      width: number;
+      fill?: string;
+      fillOpacity?: number;
+      progress: number;
+      bbox: ElementBBox;
+      arrowHead?: {
+        tip: [number, number];
+        angle: number;
+        size: number;
+        headAngle: number;
+        visible: boolean;
+      };
+    }
+  | {
       kind: "eraser";
       id: string;
       shape: "rect" | "circle";
@@ -339,20 +495,28 @@ export type RenderedElement =
     };
 
 /** A single element on the annotation overlay layer. */
-export interface AnnotationElement {
-  kind: "annotation";
-  id: string;
-  /** Full generated annotation points */
-  points: [number, number][];
-  /** Incrementally revealed points during animation */
-  currentPoints: [number, number][];
-  /** Optional smooth SVG path for high-quality closed annotations. */
-  pathD?: string;
-  strokeDasharray?: number;
-  strokeDashoffset?: number;
-  color: string;
-  width: number;
-}
+export type AnnotationElement =
+  | {
+      kind: "annotation";
+      id: string;
+      /** Full generated annotation points */
+      points: [number, number][];
+      /** Incrementally revealed points during animation */
+      currentPoints: [number, number][];
+      /** Optional smooth SVG path for high-quality closed annotations. */
+      pathD?: string;
+      strokeDasharray?: number;
+      strokeDashoffset?: number;
+      color: string;
+      width: number;
+    }
+  | {
+      kind: "emphasis_dots";
+      id: string;
+      dots: Array<{ cx: number; cy: number; r: number }>;
+      visibleCount: number;
+      color: string;
+    };
 
 // Result of script validation
 export interface ValidationResult {
@@ -382,6 +546,8 @@ export function validateScript(raw: unknown): {
   const background =
     typeof c.background === "string" ? c.background : "#ffffff";
 
+  const canvas = { width: c.width, height: c.height, background };
+
   // Commands
   if (!Array.isArray(obj.commands)) {
     return { ok: false, error: "commands 必须是数组。" };
@@ -395,10 +561,29 @@ export function validateScript(raw: unknown): {
     commands.push(v.command);
   }
 
+  for (let i = 0; i < commands.length; i++) {
+    const cmd = commands[i];
+    const where = `第 ${i + 1} 个命令`;
+    if (cmd.type === "annotate_circle") {
+      const maxOvershoot = Math.max(canvas.width, canvas.height) * 0.25;
+      if (
+        cmd.cx + cmd.rx < -maxOvershoot ||
+        cmd.cy + cmd.ry < -maxOvershoot ||
+        cmd.cx - cmd.rx > canvas.width + maxOvershoot ||
+        cmd.cy - cmd.ry > canvas.height + maxOvershoot
+      ) {
+        return {
+          ok: false,
+          error: `${where} (annotate_circle) 明显超出 canvas 范围。`,
+        };
+      }
+    }
+  }
+
   return {
     ok: true,
     script: {
-      canvas: { width: c.width, height: c.height, background },
+      canvas,
       commands,
     },
   };
@@ -437,6 +622,89 @@ function validateCommand(
         type: "write_text",
         id: o.id,
         text: o.text,
+        x: o.x,
+        y: o.y,
+        fontSize: o.fontSize,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        bold: typeof o.bold === "boolean" ? o.bold : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "write_text_segments") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (write_text_segments) 缺少 id。` };
+    if (!Array.isArray(o.segments) || o.segments.length === 0) {
+      return {
+        ok: false,
+        error: `${where} (write_text_segments) segments 必须是非空数组。`,
+      };
+    }
+    const segments: WriteTextSegment[] = [];
+    for (let j = 0; j < o.segments.length; j++) {
+      const seg = o.segments[j];
+      if (!seg || typeof seg !== "object") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}] 必须是对象。`,
+        };
+      }
+      const s = seg as Record<string, unknown>;
+      if (s.id !== undefined && typeof s.id !== "string") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}].id 必须是字符串。`,
+        };
+      }
+      if (typeof s.text !== "string") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}].text 必须是字符串。`,
+        };
+      }
+      if (s.color !== undefined && typeof s.color !== "string") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}].color 必须是字符串。`,
+        };
+      }
+      if (s.fontSize !== undefined && typeof s.fontSize !== "number") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}].fontSize 必须是数字。`,
+        };
+      }
+      if (s.bold !== undefined && typeof s.bold !== "boolean") {
+        return {
+          ok: false,
+          error: `${where} (write_text_segments) segments[${j}].bold 必须是布尔值。`,
+        };
+      }
+      segments.push({
+        id: typeof s.id === "string" ? s.id : undefined,
+        text: s.text,
+        color: typeof s.color === "string" ? s.color : undefined,
+        fontSize: typeof s.fontSize === "number" ? s.fontSize : undefined,
+        bold: typeof s.bold === "boolean" ? s.bold : undefined,
+      });
+    }
+    if (typeof o.x !== "number" || typeof o.y !== "number")
+      return {
+        ok: false,
+        error: `${where} (write_text_segments) x / y 必须是数字。`,
+      };
+    if (typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (write_text_segments) 缺少 fontSize。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (write_text_segments) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "write_text_segments",
+        id: o.id,
+        segments,
         x: o.x,
         y: o.y,
         fontSize: o.fontSize,
@@ -682,6 +950,248 @@ function validateCommand(
         points,
         color: typeof o.color === "string" ? o.color : "#111111",
         width: typeof o.width === "number" ? o.width : 2,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "draw_rectangle") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_rectangle) 缺少 id。` };
+    if (
+      typeof o.x !== "number" ||
+      typeof o.y !== "number" ||
+      typeof o.width !== "number" ||
+      typeof o.height !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_rectangle) x/y/width/height 必须是数字。`,
+      };
+    if (o.width <= 0 || o.height <= 0)
+      return { ok: false, error: `${where} (draw_rectangle) width/height 必须大于 0。` };
+    if (o.radius !== undefined && typeof o.radius !== "number")
+      return { ok: false, error: `${where} (draw_rectangle) radius 必须是数字。` };
+    if (o.strokeWidth !== undefined && typeof o.strokeWidth !== "number")
+      return { ok: false, error: `${where} (draw_rectangle) strokeWidth 必须是数字。` };
+    if (o.fill !== undefined && typeof o.fill !== "string")
+      return { ok: false, error: `${where} (draw_rectangle) fill 必须是字符串。` };
+    if (o.fillOpacity !== undefined && typeof o.fillOpacity !== "number")
+      return { ok: false, error: `${where} (draw_rectangle) fillOpacity 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_rectangle) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "draw_rectangle",
+        id: o.id,
+        x: o.x,
+        y: o.y,
+        width: o.width,
+        height: o.height,
+        radius: typeof o.radius === "number" ? o.radius : undefined,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        strokeWidth: typeof o.strokeWidth === "number" ? o.strokeWidth : 2,
+        fill: typeof o.fill === "string" ? o.fill : undefined,
+        fillOpacity: typeof o.fillOpacity === "number" ? o.fillOpacity : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "draw_triangle") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_triangle) 缺少 id。` };
+    if (!Array.isArray(o.points) || o.points.length !== 3)
+      return {
+        ok: false,
+        error: `${where} (draw_triangle) points 必须是 3 个 [x, y] 坐标。`,
+      };
+    const points: [[number, number], [number, number], [number, number]] = [
+      [0, 0],
+      [0, 0],
+      [0, 0],
+    ];
+    for (let j = 0; j < 3; j++) {
+      const p = o.points[j];
+      if (
+        !Array.isArray(p) ||
+        p.length !== 2 ||
+        typeof p[0] !== "number" ||
+        typeof p[1] !== "number"
+      ) {
+        return {
+          ok: false,
+          error: `${where} (draw_triangle) points[${j}] 必须是 [x, y] 数字数组。`,
+        };
+      }
+      points[j] = [p[0], p[1]];
+    }
+    if (o.strokeWidth !== undefined && typeof o.strokeWidth !== "number")
+      return { ok: false, error: `${where} (draw_triangle) strokeWidth 必须是数字。` };
+    if (o.fill !== undefined && typeof o.fill !== "string")
+      return { ok: false, error: `${where} (draw_triangle) fill 必须是字符串。` };
+    if (o.fillOpacity !== undefined && typeof o.fillOpacity !== "number")
+      return { ok: false, error: `${where} (draw_triangle) fillOpacity 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_triangle) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "draw_triangle",
+        id: o.id,
+        points,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        strokeWidth: typeof o.strokeWidth === "number" ? o.strokeWidth : 2,
+        fill: typeof o.fill === "string" ? o.fill : undefined,
+        fillOpacity: typeof o.fillOpacity === "number" ? o.fillOpacity : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "draw_circle") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_circle) 缺少 id。` };
+    if (
+      typeof o.cx !== "number" ||
+      typeof o.cy !== "number" ||
+      typeof o.radius !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_circle) cx/cy/radius 必须是数字。`,
+      };
+    if (o.radius <= 0)
+      return { ok: false, error: `${where} (draw_circle) radius 必须大于 0。` };
+    if (o.strokeWidth !== undefined && typeof o.strokeWidth !== "number")
+      return { ok: false, error: `${where} (draw_circle) strokeWidth 必须是数字。` };
+    if (o.fill !== undefined && typeof o.fill !== "string")
+      return { ok: false, error: `${where} (draw_circle) fill 必须是字符串。` };
+    if (o.fillOpacity !== undefined && typeof o.fillOpacity !== "number")
+      return { ok: false, error: `${where} (draw_circle) fillOpacity 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_circle) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "draw_circle",
+        id: o.id,
+        cx: o.cx,
+        cy: o.cy,
+        radius: o.radius,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        strokeWidth: typeof o.strokeWidth === "number" ? o.strokeWidth : 2,
+        fill: typeof o.fill === "string" ? o.fill : undefined,
+        fillOpacity: typeof o.fillOpacity === "number" ? o.fillOpacity : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "draw_arc_arrow") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_arc_arrow) 缺少 id。` };
+    if (
+      typeof o.cx !== "number" ||
+      typeof o.cy !== "number" ||
+      typeof o.radius !== "number" ||
+      typeof o.startAngle !== "number" ||
+      typeof o.endAngle !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_arc_arrow) cx/cy/radius/startAngle/endAngle 必须是数字。`,
+      };
+    if (o.radius <= 0)
+      return { ok: false, error: `${where} (draw_arc_arrow) radius 必须大于 0。` };
+    if (o.clockwise !== undefined && typeof o.clockwise !== "boolean")
+      return { ok: false, error: `${where} (draw_arc_arrow) clockwise 必须是布尔值。` };
+    if (o.width !== undefined && typeof o.width !== "number")
+      return { ok: false, error: `${where} (draw_arc_arrow) width 必须是数字。` };
+    if (o.headSize !== undefined && typeof o.headSize !== "number")
+      return { ok: false, error: `${where} (draw_arc_arrow) headSize 必须是数字。` };
+    if (o.headAngle !== undefined && typeof o.headAngle !== "number")
+      return { ok: false, error: `${where} (draw_arc_arrow) headAngle 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_arc_arrow) 缺少 duration。` };
+    const width = typeof o.width === "number" ? o.width : 3;
+    return {
+      ok: true,
+      command: {
+        type: "draw_arc_arrow",
+        id: o.id,
+        cx: o.cx,
+        cy: o.cy,
+        radius: o.radius,
+        startAngle: o.startAngle,
+        endAngle: o.endAngle,
+        clockwise: typeof o.clockwise === "boolean" ? o.clockwise : true,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        width,
+        headSize:
+          typeof o.headSize === "number" ? o.headSize : Math.max(width * 4, 12),
+        headAngle: typeof o.headAngle === "number" ? o.headAngle : 28,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "draw_brace") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (draw_brace) 缺少 id。` };
+    if (
+      !Array.isArray(o.from) ||
+      o.from.length !== 2 ||
+      typeof o.from[0] !== "number" ||
+      typeof o.from[1] !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_brace) from 必须是 [x, y] 数字数组。`,
+      };
+    if (
+      !Array.isArray(o.to) ||
+      o.to.length !== 2 ||
+      typeof o.to[0] !== "number" ||
+      typeof o.to[1] !== "number"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_brace) to 必须是 [x, y] 数字数组。`,
+      };
+    if (
+      o.orientation !== "left" &&
+      o.orientation !== "right" &&
+      o.orientation !== "up" &&
+      o.orientation !== "down"
+    )
+      return {
+        ok: false,
+        error: `${where} (draw_brace) orientation 必须是 left/right/up/down。`,
+      };
+    if (o.depth !== undefined && typeof o.depth !== "number")
+      return { ok: false, error: `${where} (draw_brace) depth 必须是数字。` };
+    if (o.width !== undefined && typeof o.width !== "number")
+      return { ok: false, error: `${where} (draw_brace) width 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (draw_brace) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "draw_brace",
+        id: o.id,
+        from: [o.from[0], o.from[1]],
+        to: [o.to[0], o.to[1]],
+        orientation: o.orientation,
+        depth: typeof o.depth === "number" ? o.depth : undefined,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        width: typeof o.width === "number" ? o.width : 3,
         duration: o.duration,
         narration: typeof o.narration === "string" ? o.narration : undefined,
       },
@@ -963,6 +1473,53 @@ function validateCommand(
     };
   }
 
+  if (type === "emphasize_text") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (emphasize_text) 缺少 id。` };
+    if (typeof o.targetId !== "string")
+      return { ok: false, error: `${where} (emphasize_text) 缺少 targetId。` };
+    if (o.segmentId !== undefined && typeof o.segmentId !== "string")
+      return { ok: false, error: `${where} (emphasize_text) segmentId 必须是字符串。` };
+    if (
+      o.style !== "bold" &&
+      o.style !== "color" &&
+      o.style !== "font_size" &&
+      o.style !== "underline" &&
+      o.style !== "dot"
+    ) {
+      return {
+        ok: false,
+        error: `${where} (emphasize_text) style 必须是 bold/color/font_size/underline/dot。`,
+      };
+    }
+    if ((o.style === "color" || o.style === "underline" || o.style === "dot") && o.color !== undefined && typeof o.color !== "string")
+      return { ok: false, error: `${where} (emphasize_text) color 必须是字符串。` };
+    if (o.style === "font_size" && typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (emphasize_text) fontSize 必须是数字。` };
+    if (o.width !== undefined && typeof o.width !== "number")
+      return { ok: false, error: `${where} (emphasize_text) width 必须是数字。` };
+    if (o.padding !== undefined && typeof o.padding !== "number")
+      return { ok: false, error: `${where} (emphasize_text) padding 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (emphasize_text) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "emphasize_text",
+        id: o.id,
+        targetId: o.targetId,
+        segmentId: typeof o.segmentId === "string" ? o.segmentId : undefined,
+        style: o.style,
+        color: typeof o.color === "string" ? o.color : undefined,
+        fontSize: typeof o.fontSize === "number" ? o.fontSize : undefined,
+        width: typeof o.width === "number" ? o.width : undefined,
+        padding: typeof o.padding === "number" ? o.padding : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "clear_annotations") {
     if (o.duration !== undefined && typeof o.duration !== "number")
       return {
@@ -986,7 +1543,10 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   if (cmd.type === "write_text") {
     const preview =
       cmd.text.length > 16 ? cmd.text.slice(0, 16) + "…" : cmd.text;
-    return `写字 “${preview}”`;
+    return `写字 "${preview}"`;
+  }
+  if (cmd.type === "write_text_segments") {
+    return `写分段文字 ${cmd.segments.length} 段`;
   }
   if (cmd.type === "write_math") {
     const preview =
@@ -1007,6 +1567,21 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "draw_path") {
     return `涂鸦路径 ${cmd.points.length} 个点`;
+  }
+  if (cmd.type === "draw_rectangle") {
+    return `画矩形 ${cmd.width}×${cmd.height}`;
+  }
+  if (cmd.type === "draw_triangle") {
+    return "画三角形";
+  }
+  if (cmd.type === "draw_circle") {
+    return `画圆 圆心(${cmd.cx},${cmd.cy}) r=${cmd.radius}`;
+  }
+  if (cmd.type === "draw_arc_arrow") {
+    return `画弧形箭头 ${cmd.startAngle}° → ${cmd.endAngle}°`;
+  }
+  if (cmd.type === "draw_brace") {
+    return `画大括号 ${cmd.orientation}`;
   }
   if (cmd.type === "erase_object") {
     return `删除对象 ${(cmd.targetIds ?? []).join(", ")}`;
@@ -1034,6 +1609,9 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "annotate_math_bbox") {
     return `批注公式局部 ${cmd.targetId}`;
+  }
+  if (cmd.type === "emphasize_text") {
+    return `强调文字 ${cmd.segmentId ?? cmd.targetId}`;
   }
   if (cmd.type === "clear_annotations") {
     return "清除批注图层";

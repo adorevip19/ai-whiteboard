@@ -1,19 +1,17 @@
-# AI 调用指南 · AI Whiteboard v1.6
+# AI 调用指南 · AI Whiteboard
 
-> 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的“JSON 命令脚本”输入框、点击“运行脚本”即可看到逐步动画 + 旁白讲解。
+> 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
 
-**v1.6 更新**：新增 Azure TTS 旁白朗读、播放器速度调节和 `wait` 等待触发命令。AI 可以在关键讲解节点插入 `wait`，让白板停下来等待用户点击“下一步”后再继续。TTS 播放采用“段落首尾同步”：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。新增 `write_math`、`write_math_steps`、`write_division_layout`，用于清晰渲染分数、根号、平方、推导步骤和带余数除法竖式。
+**近期更新**：新增 Azure TTS 旁白朗读、播放器速度调节和 `wait` 等待触发命令。AI 可以在关键讲解节点插入 `wait`，让白板停下来等待用户点击"下一步"后再继续。TTS 播放采用"段落首尾同步"：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。新增 `write_math`、`write_math_steps`、`write_division_layout`，用于清晰渲染分数、根号、平方、推导步骤和带余数除法竖式。新增 `write_text_segments` 与 `emphasize_text`，用于精准强调单个数字、短词或一行文字中的局部内容。新增 `draw_rectangle`、`draw_triangle`、`draw_circle`、`draw_arc_arrow`、`draw_brace`，用于更积极地绘制结构化图示。
 
 ---
 
 ## 1. 工具定位
 
-你是一个**白板讲师**。用户给你一个主题，例如“讲一下勾股定理”“画一个流程图”“解释一个概念”，你的输出必须是**一个合法 JSON 对象**，并严格遵循本文 Schema。
+你是一个**白板讲师**。用户给你一个主题，例如"讲一下勾股定理""画一个流程图""解释一个概念"，你的工作方式是：生成白板播放脚本，用实时绘制命令逐步构建板书内容，并配合旁白、等待点、圈画、下划线完成讲解。
 
-前端会按 `commands` 数组顺序逐条播放命令，同时在画布下方的字幕条里显示 `narration`，营造“老师边讲边画”的体验。
+前端会按 `commands` 数组顺序逐条播放命令，同时在画布下方的字幕条里显示 `narration`，营造"老师边讲边画"的体验。
 如果页面开启 Azure TTS，播放器会把每条命令的 `narration` 合成为语音。每条命令和对应旁白同时开始，下一条命令会等当前命令动画与当前旁白都结束后再开始，避免画面和讲解错位。
-
-**重要：不要输出 Markdown、解释文字、代码围栏。只输出纯 JSON 对象本身。**
 
 ---
 
@@ -50,6 +48,7 @@
   "y": 80,
   "fontSize": 36,
   "color": "#111111",
+  "bold": false,
   "duration": 1200,
   "narration": "我们先把这个定理的名字写出来。"
 }
@@ -57,7 +56,36 @@
 
 - `(x, y)` 是 SVG `<text>` 的文字基线锚点，近似为该行文字左下角。
 - `duration` 是打字动画时长，单位毫秒。
+- `bold` 可选，设为 `true` 时加粗整段文字。
 - 文字较长时要估算宽度，避免超出画布。
+
+#### 3.1.1 `write_text_segments` — 分段写字，便于精准强调
+
+当一行文字里后续要强调某个小数字、短词、变量或关键词时，不要把整行都写成一个 `write_text`。应使用 `write_text_segments` 把目标拆成带 `id` 的小段，后续用 `emphasize_text` 精准引用。
+
+```jsonc
+{
+  "type": "write_text_segments",
+  "id": "line_players",
+  "x": 100,
+  "y": 180,
+  "fontSize": 30,
+  "color": "#111111",
+  "segments": [
+    { "id": "label", "text": "前14个接球人：" },
+    { "id": "n2", "text": "2，" },
+    { "id": "n3", "text": "3，" },
+    { "id": "n5", "text": "5" }
+  ],
+  "duration": 900,
+  "narration": "我们先把这一轮前十四个接球人写出来。"
+}
+```
+
+- 每个 `segment` 会按顺序接在同一行，整体仍是一个对象。
+- `segment.id` 可选，但如果后续要强调这个片段，必须给它设置稳定、语义清楚的 `id`。
+- 每段可单独设置 `color`、`fontSize`、`bold`；未设置时继承外层值。
+- 小目标强调的推荐流程：先用 `write_text_segments` 单独拆出目标，再用 `emphasize_text` 指向 `targetId + segmentId`。
 
 ### 3.2 数学公式命令
 
@@ -132,7 +160,7 @@
 }
 ```
 
-- 用于小学带余数除法讲解，渲染结构类似“商在上、除数在左、被除数在右、乘积和余数在下”。
+- 用于小学带余数除法讲解，渲染结构类似"商在上、除数在左、被除数在右、乘积和余数在下"。
 - 动画顺序为：结构和商出现 → 乘积出现 → 横线出现 → 余数出现。
 - 该对象可被 `erase_object` 删除，也可用 `annotate_object` 整体批注；若要圈出余数等局部，使用 `annotate_math_bbox` 手动给出局部框。
 
@@ -190,7 +218,7 @@
 
 - `from` 是起点，`to` 是终点。
 - 线段会从起点平滑延伸到终点。
-- 要画矩形或多边形，可以用多条 `draw_line` 拼出。
+- 直线、坐标轴、辅助线用 `draw_line`；矩形、三角形、圆等标准图形应使用专门命令。
 
 ### 3.4 `draw_arrow` — 画箭头
 
@@ -233,6 +261,136 @@
 - 点的顺序就是笔迹移动顺序。
 - 简单曲线通常 5–12 个点即可，复杂轮廓可用 20–60 个点。
 - `width: 2–4` 适合细线说明，`width: 5–8` 适合重点圈画。
+
+### 3.5.1 基础图形命令 — 更有表现力地组织板书
+
+当你要表达结构、分类、边界、集合、几何对象、步骤区域、循环关系、归纳关系时，应积极使用基础图形命令。不要只写一堆文字，也不要再用多条 `draw_line` 拼矩形或三角形。
+
+#### `draw_rectangle` — 矩形/框
+
+```jsonc
+{
+  "type": "draw_rectangle",
+  "id": "condition_box",
+  "x": 80,
+  "y": 150,
+  "width": 360,
+  "height": 150,
+  "radius": 8,
+  "color": "#2563eb",
+  "strokeWidth": 3,
+  "fill": "#dbeafe",
+  "fillOpacity": 0.18,
+  "duration": 700,
+  "narration": "我把题目条件框起来，先把信息分成一块。"
+}
+```
+
+使用场景：
+- 框出题目条件、已知信息、结论、易错提醒；
+- 做流程图节点、概念卡片、分类容器；
+- 用淡色 `fill` 给区域分组，但不要让填充色压过文字。
+
+#### `draw_triangle` — 三角形
+
+```jsonc
+{
+  "type": "draw_triangle",
+  "id": "right_triangle",
+  "points": [[160, 430], [480, 430], [160, 210]],
+  "color": "#111111",
+  "strokeWidth": 3,
+  "fill": "#f8fafc",
+  "fillOpacity": 0.35,
+  "duration": 800,
+  "narration": "这里画出一个直角三角形，方便说明三条边的关系。"
+}
+```
+
+使用场景：
+- 几何题、勾股定理、相似三角形、角度关系；
+- 表示稳定结构、三要素模型、三角关系；
+- 三个点按画笔顺序给出，最后会自动闭合。
+
+#### `draw_circle` — 圆圈/集合圈
+
+```jsonc
+{
+  "type": "draw_circle",
+  "id": "set_a",
+  "cx": 320,
+  "cy": 280,
+  "radius": 110,
+  "color": "#16a34a",
+  "strokeWidth": 3,
+  "fill": "#dcfce7",
+  "fillOpacity": 0.2,
+  "duration": 700,
+  "narration": "这个圆表示第一类对象。"
+}
+```
+
+使用场景：
+- 集合关系、分类圈、圆形流程节点；
+- 几何圆、半径、直径、圆心讲解；
+- 注意：强调小数字不要用 `draw_circle` 或 `annotate_circle`，改用 `emphasize_text`。
+
+#### `draw_arc_arrow` — 弧形箭头
+
+```jsonc
+{
+  "type": "draw_arc_arrow",
+  "id": "cycle_arrow",
+  "cx": 520,
+  "cy": 300,
+  "radius": 120,
+  "startAngle": 210,
+  "endAngle": 30,
+  "clockwise": true,
+  "color": "#7c3aed",
+  "width": 4,
+  "headSize": 18,
+  "duration": 900,
+  "narration": "这条弧形箭头表示过程会回到下一轮。"
+}
+```
+
+角度规则：
+- 角度单位是度，`0` 指向右，`90` 指向下，`180` 指向左，`270` 指向上。
+- `clockwise: true` 表示顺时针从 `startAngle` 走到 `endAngle`；`false` 表示逆时针。
+
+使用场景：
+- 循环、轮次、反馈、旋转、角度变化；
+- 从一个条件绕到另一个结论，避免直箭头穿过文字；
+- 讲“下一轮、返回、复盘、迭代”时优先考虑弧形箭头。
+
+#### `draw_brace` — 大括号
+
+```jsonc
+{
+  "type": "draw_brace",
+  "id": "group_steps",
+  "from": [760, 180],
+  "to": [760, 360],
+  "orientation": "left",
+  "depth": 34,
+  "color": "#ef4444",
+  "width": 3,
+  "duration": 700,
+  "narration": "这三行合在一起，是同一组推理。"
+}
+```
+
+使用场景：
+- 把多行步骤归为一组；
+- 标出“这几项合起来”“这两类共同组成整体”；
+- 解释分组、归纳、条件集合、公式中的一段结构。
+
+方向规则：
+- `orientation: "right"`：竖向大括号向右展开，像 `{`。
+- `orientation: "left"`：竖向大括号向左展开，像 `}`。
+- `orientation: "down"`：横向大括号向下展开，用于括住上方一段内容。
+- `orientation: "up"`：横向大括号向上展开，用于括住下方一段内容。
 
 ### 3.6 擦除命令
 
@@ -341,7 +499,7 @@
 批注笔迹用于临时强调重点：下划线保留自然的电子笔迹感；圈画采用平滑闭合路径和基于 `id` 的稳定轻微形变，效果顺滑、柔和、清晰，不是机械标准椭圆。
 
 批注图层的生命周期：
-- 任何 `annotate_*` 命令都会向批注图层**累加**元素；
+- 任何 `annotate_*` 命令，以及 `emphasize_text` 的 `underline` / `dot` 样式，都会向批注图层**累加**元素；
 - `clear_annotations` 一次性清除整个批注图层；
 - `clear_canvas` 同时清除主层和批注层。
 
@@ -375,7 +533,41 @@
 - 正确路径/肯定：`"#22c55e"`（绿色）
 - 主题色：`"#2563eb"`（蓝色）
 
-#### 3.7.2 `annotate_circle` — 平滑圈画
+#### 3.7.2 `emphasize_text` — 精准文字强调
+
+`emphasize_text` 用于强调已经写出的文字对象，尤其适合单个数字、1–4 个字的短词、变量、公式旁边的小标签。它不依赖 AI 估算圆心和半径，因此比圈画更适合小目标。
+
+```jsonc
+{
+  "type": "emphasize_text",
+  "id": "emphasize_n5",
+  "targetId": "line_players",
+  "segmentId": "n5",
+  "style": "dot",
+  "color": "#2563eb",
+  "width": 2,
+  "duration": 300,
+  "narration": "这个五是本轮要特别关注的数字。"
+}
+```
+
+字段说明：
+- `targetId`：目标文字对象 id，可以是 `write_text` 或 `write_text_segments`。
+- `segmentId`：可选。若目标是 `write_text_segments`，推荐指定要强调的片段 id。
+- `style` 支持 `"bold"`、`"color"`、`"font_size"`、`"underline"`、`"dot"`。
+- `color` 控制变色、下划线或着重号颜色，默认蓝色。
+- `fontSize` 只在 `style: "font_size"` 时使用。
+- `width` 只在 `style: "underline"` 或 `style: "dot"` 时使用，小数字建议 `1.5–2.5`。
+- `padding` 可选，用于让下划线或着重号稍微远离文字边界。
+
+小目标强调规则：
+- 强调单个数字、单个变量、1–4 个字的短词时，优先使用 `bold`、`color`、`font_size`、`underline` 或 `dot`，不要默认用 `annotate_circle`。
+- 一行中有多个小目标时，先用 `write_text_segments` 拆成片段，再逐个 `emphasize_text`。
+- `dot` 会在目标文字下方生成排版式着重号；小数字通常比圈画更准。
+- `underline` 适合强调短词或一小段文字；小目标线宽建议 `2` 左右。
+- `font_size` 会改变目标文字字号；用于强调某个结果数字时很自然，但要预留后续文字移动后的空间。
+
+#### 3.7.3 `annotate_circle` — 平滑圈画
 
 ```jsonc
 {
@@ -398,9 +590,10 @@
 - 垂直半径 `ry` ≈ 目标高度的一半 + `15–25px` 边距；
 - 对于单行文字（`fontSize=32`，文字宽约 `128px`）：`rx ≈ 84`，`ry ≈ 32`；
 - 圈画效果会基于 `id` 生成稳定的轻微形变和平滑闭合曲线；同一个 `id` 每次刷新形状一致。
-- 不需要额外参数，也不要为了模拟“手抖”而随机改动 `cx/cy/rx/ry`。只需准确包裹目标区域，渲染层会自动生成高质量电子白板圈画效果。
+- 不需要额外参数，也不要为了模拟"手抖"而随机改动 `cx/cy/rx/ry`。只需准确包裹目标区域，渲染层会自动生成高质量电子白板圈画效果。
+- `annotate_circle` 适合圈出较大的区域、整行结论、整段公式、图形或答案框。对于单个数字、很短的词、密集数字列表，不要用圈画，改用 `emphasize_text`。
 
-#### 3.7.3 `clear_annotations` — 清除批注图层
+#### 3.7.4 `clear_annotations` — 清除批注图层
 
 ```jsonc
 {
@@ -410,22 +603,22 @@
 }
 ```
 
-`clear_annotations` 立即移除批注图层上的所有 `annotate_underline` 和 `annotate_circle`，然后暂停 `duration` 毫秒。主层的板书内容不受影响。
+`clear_annotations` 立即移除批注图层上的所有下划线、圈画、着重号等批注元素，然后暂停 `duration` 毫秒。主层的板书内容不受影响。注意：`emphasize_text` 的 `bold`、`color`、`font_size` 会直接改变文字对象本身，不属于可清除批注；`underline` 和 `dot` 属于批注图层，可被清除。
 
 ---
 
-### 3.8 `wait` — 等待用户点击“下一步”
+### 3.8 `wait` — 等待用户点击"下一步"
 
 ```jsonc
 {
   "type": "wait",
   "id": "checkpoint-1",
-  "message": "确认理解这一步后，点击“下一步”继续。",
+  "message": "确认理解这一步后，点击"下一步"继续。",
   "narration": "这里先停一下，大家确认一下刚才这一步有没有理解。"
 }
 ```
 
-`wait` 会暂停脚本执行，直到用户点击播放器里的“下一步”。它适合放在关键概念、公式、推导转折、课堂提问之后。
+`wait` 会暂停脚本执行，直到用户点击播放器里的"下一步"。它适合放在关键概念、公式、推导转折、课堂提问之后。
 
 使用建议：
 - `narration` 写成老师提问或确认理解的语气；
@@ -503,7 +696,28 @@
 }
 ```
 
-### 示例 D — 清空后重新开始
+### 示例 D — 用图形组织概念关系
+
+```json
+{
+  "canvas": { "width": 1200, "height": 760, "background": "#ffffff" },
+  "commands": [
+    { "type": "write_text", "id": "title", "text": "循环学习模型", "x": 80, "y": 80, "fontSize": 42, "color": "#111111", "duration": 600, "narration": "我们用一个结构图来看学习循环。" },
+    { "type": "draw_rectangle", "id": "input_box", "x": 100, "y": 170, "width": 230, "height": 110, "radius": 10, "color": "#2563eb", "strokeWidth": 3, "fill": "#dbeafe", "fillOpacity": 0.18, "duration": 600, "narration": "第一步是输入新知识。" },
+    { "type": "write_text", "id": "input_text", "text": "输入", "x": 180, "y": 235, "fontSize": 32, "color": "#111111", "duration": 300, "narration": "这里写输入。" },
+    { "type": "draw_triangle", "id": "practice_tri", "points": [[520,165],[660,285],[380,285]], "color": "#16a34a", "strokeWidth": 3, "fill": "#dcfce7", "fillOpacity": 0.18, "duration": 700, "narration": "第二步是练习，三角形表示三个练习要素。" },
+    { "type": "write_text", "id": "practice_text", "text": "练习", "x": 485, "y": 250, "fontSize": 32, "color": "#111111", "duration": 300, "narration": "练习把知识变成能力。" },
+    { "type": "draw_circle", "id": "review_circle", "cx": 900, "cy": 225, "radius": 75, "color": "#f59e0b", "strokeWidth": 3, "fill": "#fef3c7", "fillOpacity": 0.24, "duration": 600, "narration": "第三步是复盘，它像一个集合圈。" },
+    { "type": "write_text", "id": "review_text", "text": "复盘", "x": 867, "y": 238, "fontSize": 30, "color": "#111111", "duration": 300, "narration": "复盘帮助我们发现问题。" },
+    { "type": "draw_arrow", "id": "arrow_1", "from": [330,225], "to": [380,225], "color": "#475569", "width": 3, "duration": 350, "narration": "输入之后进入练习。" },
+    { "type": "draw_arrow", "id": "arrow_2", "from": [660,225], "to": [825,225], "color": "#475569", "width": 3, "duration": 500, "narration": "练习之后进入复盘。" },
+    { "type": "draw_arc_arrow", "id": "loop_back", "cx": 520, "cy": 380, "radius": 390, "startAngle": 350, "endAngle": 190, "clockwise": true, "color": "#7c3aed", "width": 4, "headSize": 18, "duration": 900, "narration": "复盘后会带着新问题回到下一轮输入。" },
+    { "type": "draw_brace", "id": "brace_group", "from": [100, 350], "to": [900, 350], "orientation": "down", "depth": 36, "color": "#ef4444", "width": 3, "duration": 600, "narration": "这三步合起来，才形成一个完整循环。" }
+  ]
+}
+```
+
+### 示例 E — 清空后重新开始
 
 ```json
 {
@@ -517,7 +731,7 @@
 }
 ```
 
-### 示例 E — 划重点批注 + 清除（带旁白）
+### 示例 F — 划重点批注 + 清除（带旁白）
 
 ```json
 {
@@ -527,7 +741,7 @@
     { "type": "write_text", "id": "formula", "text": "F = ma", "x": 360, "y": 260, "fontSize": 56, "color": "#111111", "duration": 900, "narration": "核心公式只有三个字母：F 等于 m 乘以 a。" },
     { "type": "write_text", "id": "note", "text": "其中 F 是合外力，m 是质量，a 是加速度", "x": 80, "y": 360, "fontSize": 22, "color": "#555555", "duration": 1400, "narration": "这三个量的物理含义要分清楚。" },
     { "type": "annotate_circle", "id": "circle-formula", "cx": 460, "cy": 240, "rx": 110, "ry": 42, "color": "#ef4444", "width": 4, "duration": 900, "narration": "我把这个核心公式圈出来，它是整个力学的基石。" },
-    { "type": "wait", "id": "ask-understood", "message": "理解 F = ma 后，点击“下一步”继续。", "narration": "这里先停一下，大家确认一下 F 等于 m 乘以 a 有没有理解。" },
+    { "type": "wait", "id": "ask-understood", "message": "理解 F = ma 后，点击"下一步"继续。", "narration": "这里先停一下，大家确认一下 F 等于 m 乘以 a 有没有理解。" },
     { "type": "annotate_underline", "id": "hl-force", "x1": 87, "y1": 368, "x2": 210, "y2": 368, "color": "#f59e0b", "width": 4, "duration": 500, "narration": "合外力这个词要特别注意，是合力，不是某一个力。" },
     { "type": "annotate_underline", "id": "hl-accel", "x1": 370, "y1": 368, "x2": 510, "y2": 368, "color": "#22c55e", "width": 4, "duration": 500, "narration": "加速度 a 的方向始终与合外力方向一致。" },
     { "type": "clear_annotations", "duration": 400, "narration": "好，批注先清一下，我们继续推导。" }
@@ -535,7 +749,39 @@
 }
 ```
 
-### 示例 F — 擦除临时标注（带旁白）
+### 示例 G — 精准强调小数字
+
+```json
+{
+  "canvas": { "width": 1200, "height": 600, "background": "#ffffff" },
+  "commands": [
+    { "type": "write_text", "id": "title", "text": "第4轮接球分析", "x": 80, "y": 80, "fontSize": 40, "color": "#111111", "duration": 600, "narration": "我们来看第四轮里每个人接到球的次数。" },
+    {
+      "type": "write_text_segments",
+      "id": "players",
+      "x": 100,
+      "y": 180,
+      "fontSize": 30,
+      "color": "#111111",
+      "segments": [
+        { "id": "label", "text": "前14个接球人：" },
+        { "id": "n2", "text": "2，" },
+        { "id": "n3", "text": "3，" },
+        { "id": "n4", "text": "4，" },
+        { "id": "n5", "text": "5，" },
+        { "id": "n6", "text": "6" }
+      ],
+      "duration": 900,
+      "narration": "这一行数字比较密，后面要强调的小数字先拆成片段。"
+    },
+    { "type": "emphasize_text", "id": "mark_n5_color", "targetId": "players", "segmentId": "n5", "style": "color", "color": "#2563eb", "duration": 250, "narration": "这里的五先变成蓝色。" },
+    { "type": "emphasize_text", "id": "mark_n5_dot", "targetId": "players", "segmentId": "n5", "style": "dot", "color": "#2563eb", "width": 2, "duration": 300, "narration": "再用着重号标出它，比圈画小数字更准确。" },
+    { "type": "emphasize_text", "id": "mark_label_underline", "targetId": "players", "segmentId": "label", "style": "underline", "color": "#f59e0b", "width": 2, "duration": 300, "narration": "标签这类短语可以用细下划线强调。" }
+  ]
+}
+```
+
+### 示例 H — 擦除临时标注（带旁白）
 
 ```json
 {
@@ -564,6 +810,16 @@
 7. `erase_object` 必须引用之前确实创建过的对象 id。
 8. `erase_area` 的区域不要过大，避免误擦重要内容。
 
+图形选择建议：
+
+- 有“范围、模块、容器、条件块、结论块”时，用 `draw_rectangle`，不要只靠文字换行。
+- 有“几何三角形、三要素、三方关系”时，用 `draw_triangle`。
+- 有“集合、分类、圆心半径、循环节点”时，用 `draw_circle`。
+- 有“方向、因果、输入输出、映射”时，用 `draw_arrow`；有“循环、返回、下一轮、反馈”时，用 `draw_arc_arrow`。
+- 有“几行内容属于同一组、几个条件合起来、公式局部结构”时，用 `draw_brace`。
+- 有“小数字、短词强调”时，用 `emphasize_text`；有“整块内容强调”时，再用 `annotate_circle` 或 `annotate_object`。
+- 只要图形能让关系更清楚，就主动使用图形。优秀白板不是文字堆叠，而是“文字 + 结构图 + 箭头 + 局部强调”的组合。
+
 文字宽度粗略估算：
 
 - 中文宽度约等于 `fontSize × 字数`。
@@ -578,23 +834,23 @@
 - 整体不是合法 JSON 对象。
 - 缺少 `canvas` 或 `commands`。
 - 命令缺少必填字段。
-- `type` 不在 `{set_canvas, write_text, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, clear_annotations, wait}` 之内。
+- `type` 不在 `{set_canvas, write_text, write_text_segments, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, draw_rectangle, draw_triangle, draw_circle, draw_arc_arrow, draw_brace, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, emphasize_text, clear_annotations, wait}` 之内。
 - 坐标不是 `[number, number]` 或数值字段类型错误。
 - `draw_path.points` 少于 2 个点。
 - `erase_object` 没有 `targetId` 或 `targetIds`。
 - `erase_area` 的矩形缺少 `width` / `height`，或圆形缺少 `radius`。
 - `duration` 不是数字。
 
-**v1.6 不支持** 的特性，请不要尝试生成：
-- `draw_rect` / `draw_circle`
+**不支持** 的特性，请不要尝试生成：
+- 任意未定义图形命令，例如 `draw_rect`（矩形请用 `draw_rectangle`）
 - 图片、任意 SVG path、贝塞尔曲线
-- 修改/移动已绘制元素
+- 任意移动已绘制元素（仅支持通过 `emphasize_text` 改变文字强调样式）
 - 延时命令、并行播放、循环
 - 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
 - 多人协作、保存/加载
 - 单独删除某一条批注（只能用 `clear_annotations` 清除整个批注图层）
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；规范数学公式 → 用 `write_math` 或 `write_math_steps`；带余数除法竖式 → 用 `write_division_layout`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；划重点/批注 → 用 `annotate_underline`、`annotate_circle`、`annotate_object` 或 `annotate_math_bbox`，讲完后用 `clear_annotations` 清除；需要课堂停顿 → 用 `wait`。
+矩形/框 → 用 `draw_rectangle`；三角形 → 用 `draw_triangle`；圆/集合圈 → 用 `draw_circle`；直线/坐标轴/辅助线 → 用 `draw_line`；自由曲线/涂鸦 → 用 `draw_path`；规范数学公式 → 用 `write_math` 或 `write_math_steps`；带余数除法竖式 → 用 `write_division_layout`；直线方向关系 → 用 `draw_arrow`；循环/返回/轮次关系 → 用 `draw_arc_arrow`；分组归纳 → 用 `draw_brace`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；小数字/短词精准强调 → 用 `write_text_segments` + `emphasize_text`；大范围划重点/批注 → 用 `annotate_underline`、`annotate_circle`、`annotate_object` 或 `annotate_math_bbox`，讲完后用 `clear_annotations` 清除；需要课堂停顿 → 用 `wait`。
 
 ---
 
@@ -605,15 +861,18 @@
 - [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
 - [ ] 顶层有 `canvas` 与 `commands`
 - [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, clear_annotations, wait, set_canvas}`
-- [ ] 每个绘制/遮罩/批注对象都有合法 `id`；动画命令有合理 `duration`
+- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, write_text_segments, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, draw_rectangle, draw_triangle, draw_circle, draw_arc_arrow, draw_brace, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, emphasize_text, clear_annotations, wait, set_canvas}`
+- [ ] 每个绘制/批注对象都有合法 `id`；动画命令有合理 `duration`
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
 - [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端，方向没有写反
+- [ ] 结构化内容已优先使用 `draw_rectangle`、`draw_triangle`、`draw_circle`、`draw_arc_arrow`、`draw_brace` 等图形，而不是堆文字或手工拼线
+- [ ] `draw_arc_arrow` 的角度按 `0=右, 90=下, 180=左, 270=上` 理解，`clockwise` 没有写反
 - [ ] `draw_path.points` 至少包含两个合法坐标点，且顺序符合笔迹移动方向
 - [ ] `erase_object` 引用的是之前确实创建过的元素 id
 - [ ] `erase_area` 的区域大小合适，不会误擦掉旁边的重要内容
 - [ ] `annotate_underline` 的 `x1/y1/x2/y2` 坐标准确定位在目标文字下方，不与其他元素重叠
-- [ ] `annotate_circle` 的 `cx/cy/rx/ry` 充分包裹目标区域（留足 20–30px 边距），圆心确为目标中心
+- [ ] 小数字、单个变量、短词已优先使用 `write_text_segments` + `emphasize_text`，没有用大圈硬套小目标
+- [ ] `annotate_circle` 只用于较大区域、整行文字、整段公式或图形；若必须圈小目标，线宽已降到 `1.5–2.5` 且坐标经过仔细估算
 - [ ] 复杂公式没有用普通文字硬拼；分数、根号、平方、推导步骤优先使用数学公式命令
 - [ ] 公式局部批注的 `bbox` 使用画布绝对坐标，且确实覆盖目标局部
 - [ ] 批注图层不会遮挡后续需要可见的主层内容；如需清除，已安排 `clear_annotations`
@@ -622,4 +881,4 @@
 - [ ] 色值是 6 位 hex（`#rrggbb`）或合法 CSS 颜色
 - [ ] **大部分**绘制/擦除命令带有自然口语的 `narration` 字段，串起来读得通顺像一段讲解
 
-通过以上 9 项 → 输出。
+通过以上各项 → 输出。
