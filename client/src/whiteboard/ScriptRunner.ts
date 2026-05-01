@@ -4,6 +4,7 @@
 import type {
   AnnotationElement,
   CanvasConfig,
+  ElementBBox,
   RenderedElement,
   WhiteboardCommand,
   WhiteboardScript,
@@ -92,6 +93,9 @@ export class ScriptRunner {
         const cmd = this.script.commands[i];
         const narration =
           cmd.type === "write_text" ||
+          cmd.type === "write_math" ||
+          cmd.type === "write_math_steps" ||
+          cmd.type === "write_division_layout" ||
           cmd.type === "draw_line" ||
           cmd.type === "draw_arrow" ||
           cmd.type === "draw_path" ||
@@ -101,6 +105,8 @@ export class ScriptRunner {
           cmd.type === "wait" ||
           cmd.type === "annotate_underline" ||
           cmd.type === "annotate_circle" ||
+          cmd.type === "annotate_object" ||
+          cmd.type === "annotate_math_bbox" ||
           cmd.type === "clear_annotations"
             ? (cmd.narration ?? null)
             : null;
@@ -156,6 +162,38 @@ export class ScriptRunner {
     });
   }
 
+  private estimateTextWidth(text: string, fontSize: number) {
+    let width = 0;
+    for (const char of Array.from(text)) {
+      width += /[\u4e00-\u9fff]/.test(char) ? fontSize : fontSize * 0.58;
+    }
+    return Math.max(width, fontSize);
+  }
+
+  private estimateLatexWidth(latex: string, fontSize: number, displayMode = false) {
+    const compact = latex
+      .replace(/\\(frac|sqrt|text|begin|end|left|right|cdots|div|times|cdot|quad|qquad)/g, "MM")
+      .replace(/[{}\\_^]/g, "");
+    return Math.max(
+      fontSize * (displayMode ? 2.4 : 1.6),
+      Math.min(this.canvas.width, compact.length * fontSize * 0.58 + fontSize * 1.5),
+    );
+  }
+
+  private getElementBBox(el: RenderedElement): ElementBBox {
+    if ("bbox" in el) return el.bbox;
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  private expandBBox(bbox: ElementBBox, padding: number): ElementBBox {
+    return {
+      x: bbox.x - padding,
+      y: bbox.y - padding,
+      width: bbox.width + padding * 2,
+      height: bbox.height + padding * 2,
+    };
+  }
+
   private runCommand(cmd: WhiteboardCommand): Promise<void> {
     if (cmd.type === "set_canvas") {
       this.canvas = {
@@ -168,6 +206,15 @@ export class ScriptRunner {
     }
     if (cmd.type === "write_text") {
       return this.animateText(cmd);
+    }
+    if (cmd.type === "write_math") {
+      return this.animateMath(cmd);
+    }
+    if (cmd.type === "write_math_steps") {
+      return this.animateMathSteps(cmd);
+    }
+    if (cmd.type === "write_division_layout") {
+      return this.animateDivisionLayout(cmd);
     }
     if (cmd.type === "draw_line") {
       return this.animateLine(cmd);
@@ -196,6 +243,12 @@ export class ScriptRunner {
     if (cmd.type === "annotate_circle") {
       return this.animateAnnotateCircle(cmd);
     }
+    if (cmd.type === "annotate_object") {
+      return this.animateAnnotateObject(cmd);
+    }
+    if (cmd.type === "annotate_math_bbox") {
+      return this.animateAnnotateMathBbox(cmd);
+    }
     if (cmd.type === "clear_annotations") {
       return this.clearAnnotations(cmd);
     }
@@ -218,6 +271,12 @@ export class ScriptRunner {
         y: cmd.y,
         fontSize: cmd.fontSize,
         color: cmd.color ?? "#111111",
+        bbox: {
+          x: cmd.x,
+          y: cmd.y - cmd.fontSize,
+          width: this.estimateTextWidth(cmd.text, cmd.fontSize),
+          height: cmd.fontSize * 1.25,
+        },
       });
       this.commit();
 
@@ -259,6 +318,164 @@ export class ScriptRunner {
     });
   }
 
+  private animateMath(cmd: Extract<WhiteboardCommand, { type: "write_math" }>) {
+    return new Promise<void>((resolve) => {
+      const elIndex = this.elements.length;
+      const bbox: ElementBBox = {
+        x: cmd.x,
+        y: cmd.y,
+        width: this.estimateLatexWidth(cmd.latex, cmd.fontSize, cmd.displayMode ?? false),
+        height: cmd.fontSize * (cmd.displayMode ? 1.9 : 1.45),
+      };
+      this.elements.push({
+        kind: "math",
+        id: cmd.id,
+        latex: cmd.latex,
+        x: cmd.x,
+        y: cmd.y,
+        fontSize: cmd.fontSize,
+        color: cmd.color ?? "#111111",
+        displayMode: cmd.displayMode ?? false,
+        bbox,
+        opacity: 0,
+      });
+      this.commit();
+
+      const duration = this.durationFor(cmd.duration);
+      const start = performance.now();
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "math") {
+          target.opacity = t;
+          this.commit();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateMathSteps(
+    cmd: Extract<WhiteboardCommand, { type: "write_math_steps" }>,
+  ) {
+    return new Promise<void>((resolve) => {
+      const lineGap = cmd.lineGap ?? Math.round(cmd.fontSize * 1.65);
+      const maxWidth = Math.max(
+        ...cmd.steps.map((step) =>
+          this.estimateLatexWidth(step, cmd.fontSize, cmd.displayMode ?? false),
+        ),
+      );
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "math_steps",
+        id: cmd.id,
+        steps: cmd.steps,
+        visibleCount: 0,
+        x: cmd.x,
+        y: cmd.y,
+        fontSize: cmd.fontSize,
+        lineGap,
+        color: cmd.color ?? "#111111",
+        displayMode: cmd.displayMode ?? false,
+        bbox: {
+          x: cmd.x,
+          y: cmd.y,
+          width: maxWidth,
+          height: lineGap * cmd.steps.length,
+        },
+      });
+      this.commit();
+
+      const duration = this.durationFor(cmd.duration);
+      const start = performance.now();
+      const total = cmd.steps.length;
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "math_steps") {
+          target.visibleCount = Math.min(total, Math.max(1, Math.ceil(t * total)));
+          this.commit();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateDivisionLayout(
+    cmd: Extract<WhiteboardCommand, { type: "write_division_layout" }>,
+  ) {
+    return new Promise<void>((resolve) => {
+      const divisor = String(cmd.divisor);
+      const dividend = String(cmd.dividend);
+      const quotient = String(cmd.quotient);
+      const remainder = String(cmd.remainder);
+      const product = String(Number(cmd.divisor) * Number(cmd.quotient));
+      const digitW = cmd.fontSize * 0.64;
+      const bodyDigits = Math.max(dividend.length, product.length, remainder.length, quotient.length);
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "division_layout",
+        id: cmd.id,
+        dividend,
+        divisor,
+        quotient,
+        product: Number.isFinite(Number(product)) ? product : "",
+        remainder,
+        x: cmd.x,
+        y: cmd.y,
+        fontSize: cmd.fontSize,
+        color: cmd.color ?? "#111111",
+        stage: 0,
+        bbox: {
+          x: cmd.x,
+          y: cmd.y,
+          width: digitW * (bodyDigits + divisor.length + 2.8),
+          height: cmd.fontSize * 4.9,
+        },
+      });
+      this.commit();
+
+      const duration = this.durationFor(cmd.duration);
+      const start = performance.now();
+      const tick = (now: number) => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((now - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "division_layout") {
+          target.stage = Math.min(4, Math.max(1, Math.ceil(t * 4)));
+          this.commit();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
   private animateLine(cmd: Extract<WhiteboardCommand, { type: "draw_line" }>) {
     return new Promise<void>((resolve) => {
       const elIndex = this.elements.length;
@@ -270,6 +487,12 @@ export class ScriptRunner {
         currentEnd: [cmd.from[0], cmd.from[1]], // start collapsed at origin
         color: cmd.color ?? "#111111",
         width: cmd.width ?? 2,
+        bbox: {
+          x: Math.min(cmd.from[0], cmd.to[0]),
+          y: Math.min(cmd.from[1], cmd.to[1]),
+          width: Math.abs(cmd.to[0] - cmd.from[0]),
+          height: Math.abs(cmd.to[1] - cmd.from[1]),
+        },
       });
       this.commit();
 
@@ -321,6 +544,12 @@ export class ScriptRunner {
         width: cmd.width ?? 2,
         headSize: cmd.headSize ?? Math.max((cmd.width ?? 2) * 4, 12),
         headAngle: cmd.headAngle ?? 28,
+        bbox: {
+          x: Math.min(cmd.from[0], cmd.to[0]) - (cmd.headSize ?? 12),
+          y: Math.min(cmd.from[1], cmd.to[1]) - (cmd.headSize ?? 12),
+          width: Math.abs(cmd.to[0] - cmd.from[0]) + (cmd.headSize ?? 12) * 2,
+          height: Math.abs(cmd.to[1] - cmd.from[1]) + (cmd.headSize ?? 12) * 2,
+        },
       });
       this.commit();
 
@@ -367,6 +596,14 @@ export class ScriptRunner {
         currentPoints: [points[0]],
         color: cmd.color ?? "#111111",
         width: cmd.width ?? 2,
+        bbox: {
+          x: Math.min(...points.map(([x]) => x)),
+          y: Math.min(...points.map(([, y]) => y)),
+          width:
+            Math.max(...points.map(([x]) => x)) - Math.min(...points.map(([x]) => x)),
+          height:
+            Math.max(...points.map(([, y]) => y)) - Math.min(...points.map(([, y]) => y)),
+        },
       });
       this.commit();
 
@@ -464,6 +701,20 @@ export class ScriptRunner {
       height: cmd.height ?? 0,
       radius: cmd.radius ?? 0,
       color: this.canvas.background,
+      bbox:
+        shape === "circle"
+          ? {
+              x: cmd.x - (cmd.radius ?? 0),
+              y: cmd.y - (cmd.radius ?? 0),
+              width: (cmd.radius ?? 0) * 2,
+              height: (cmd.radius ?? 0) * 2,
+            }
+          : {
+              x: cmd.x,
+              y: cmd.y,
+              width: cmd.width ?? 0,
+              height: cmd.height ?? 0,
+            },
     });
     this.commit();
     await this.wait(cmd.duration ?? 300);
@@ -797,6 +1048,84 @@ export class ScriptRunner {
       cmd.width ?? 3,
       cmd.duration,
     );
+  }
+
+  private annotateBBox({
+    id,
+    bbox,
+    style,
+    padding,
+    color,
+    width,
+    duration,
+  }: {
+    id: string;
+    bbox: ElementBBox;
+    style?: "circle" | "underline";
+    padding: number;
+    color: string;
+    width: number;
+    duration: number;
+  }) {
+    const expanded = this.expandBBox(bbox, padding);
+    if (style === "underline") {
+      const y = expanded.y + expanded.height + Math.max(width * 2, 4);
+      const points = this.generateHandDrawnLine(
+        expanded.x,
+        y,
+        expanded.x + expanded.width,
+        y,
+        id,
+      );
+      return this.animateAnnotationPath(id, points, color, width, duration);
+    }
+
+    const points = this.generateSmoothCirclePoints({
+      cx: expanded.x + expanded.width / 2,
+      cy: expanded.y + expanded.height / 2,
+      rx: Math.max(expanded.width / 2, 8),
+      ry: Math.max(expanded.height / 2, 8),
+      seed: id,
+      pointCount: 16,
+      distortion: 0.022,
+    });
+    return this.animateClosedAnnotationPath(id, points, color, width, duration);
+  }
+
+  private animateAnnotateObject(
+    cmd: Extract<WhiteboardCommand, { type: "annotate_object" }>,
+  ) {
+    const target = this.elements.find((el) => el.id === cmd.targetId);
+    if (!target) {
+      return Promise.reject(new Error(`annotate_object 找不到目标对象: ${cmd.targetId}`));
+    }
+    return this.annotateBBox({
+      id: cmd.id,
+      bbox: this.getElementBBox(target),
+      style: cmd.style ?? "circle",
+      padding: cmd.padding ?? 8,
+      color: cmd.color ?? "#ef4444",
+      width: cmd.width ?? 3,
+      duration: cmd.duration,
+    });
+  }
+
+  private animateAnnotateMathBbox(
+    cmd: Extract<WhiteboardCommand, { type: "annotate_math_bbox" }>,
+  ) {
+    const target = this.elements.find((el) => el.id === cmd.targetId);
+    if (!target) {
+      return Promise.reject(new Error(`annotate_math_bbox 找不到目标对象: ${cmd.targetId}`));
+    }
+    return this.annotateBBox({
+      id: cmd.id,
+      bbox: cmd.bbox,
+      style: cmd.style ?? "circle",
+      padding: cmd.padding ?? 6,
+      color: cmd.color ?? "#ef4444",
+      width: cmd.width ?? 3,
+      duration: cmd.duration,
+    });
   }
 
   private async clearAnnotations(

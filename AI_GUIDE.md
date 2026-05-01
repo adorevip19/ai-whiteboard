@@ -2,7 +2,7 @@
 
 > 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的“JSON 命令脚本”输入框、点击“运行脚本”即可看到逐步动画 + 旁白讲解。
 
-**v1.6 更新**：新增 Azure TTS 旁白朗读、播放器速度调节和 `wait` 等待触发命令。AI 可以在关键讲解节点插入 `wait`，让白板停下来等待用户点击“下一步”后再继续。TTS 播放采用“段落首尾同步”：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。
+**v1.6 更新**：新增 Azure TTS 旁白朗读、播放器速度调节和 `wait` 等待触发命令。AI 可以在关键讲解节点插入 `wait`，让白板停下来等待用户点击“下一步”后再继续。TTS 播放采用“段落首尾同步”：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。新增 `write_math`、`write_math_steps`、`write_division_layout`，用于清晰渲染分数、根号、平方、推导步骤和带余数除法竖式。
 
 ---
 
@@ -59,7 +59,121 @@
 - `duration` 是打字动画时长，单位毫秒。
 - 文字较长时要估算宽度，避免超出画布。
 
-### 3.2 `draw_line` — 画线
+### 3.2 数学公式命令
+
+复杂数学表达不要用 `write_text` 硬拼。遇到分数、根号、上下标、规范等式推导、带余数除法时，优先使用本节命令。
+
+#### 3.2.1 `write_math` — 写单个 LaTeX 公式
+
+```jsonc
+{
+  "type": "write_math",
+  "id": "formula_1",
+  "latex": "23 \\div 4 = 5 \\cdots 3",
+  "x": 100,
+  "y": 260,
+  "fontSize": 36,
+  "color": "#111111",
+  "displayMode": false,
+  "duration": 600,
+  "narration": "我们先把二十三除以四写成算式。"
+}
+```
+
+- `(x, y)` 是公式左上角坐标，和白板坐标系统一致。
+- `latex` 使用 KaTeX 支持的数学表达；解析失败时会显示红色错误提示，不会让整段脚本崩溃。
+- `fontSize` 控制公式整体字号，`color` 控制公式颜色，背景透明。
+- `displayMode` 默认 `false`。普通行内公式用 `false`；居中大公式或分式较高时可用 `true`。
+- 支持常见写法：`\\frac{3}{4}`、`a^2 + b^2 = c^2`、`\\sqrt{25}=5`、`23 \\div 4 = 5 \\cdots 3`。
+- 公式旁边有中文时，优先用 `write_text` 写中文，再用 `write_math` 写公式，不要把大段中文塞进 KaTeX。
+
+#### 3.2.2 `write_math_steps` — 逐行写公式推导
+
+```jsonc
+{
+  "type": "write_math_steps",
+  "id": "steps_1",
+  "steps": [
+    "23 \\div 4 = 5 \\cdots 3",
+    "5 \\text{ 辆坐满，还剩 } 3 \\text{ 人}",
+    "5 + 1 = 6"
+  ],
+  "x": 100,
+  "y": 300,
+  "fontSize": 34,
+  "lineGap": 58,
+  "color": "#111111",
+  "duration": 1200,
+  "narration": "我们把推理过程分成三行。"
+}
+```
+
+- `steps` 每个字符串是一行 LaTeX，播放器会按顺序逐行显示。
+- `lineGap` 控制行距，默认约为 `fontSize × 1.65`。
+- 多行推导会作为一个整体对象保存，后续可用 `erase_object` 删除，也可用 `annotate_object` 整体圈出。
+- 如果某行需要少量中文，可用 `\\text{...}`；长句解释仍建议拆成普通 `write_text`。
+
+#### 3.2.3 `write_division_layout` — 带余数除法竖式
+
+```jsonc
+{
+  "type": "write_division_layout",
+  "id": "division_1",
+  "dividend": 23,
+  "divisor": 4,
+  "quotient": 5,
+  "remainder": 3,
+  "x": 100,
+  "y": 260,
+  "fontSize": 34,
+  "color": "#111111",
+  "duration": 1000,
+  "narration": "用竖式看，四乘五等于二十，还剩三。"
+}
+```
+
+- 用于小学带余数除法讲解，渲染结构类似“商在上、除数在左、被除数在右、乘积和余数在下”。
+- 动画顺序为：结构和商出现 → 乘积出现 → 横线出现 → 余数出现。
+- 该对象可被 `erase_object` 删除，也可用 `annotate_object` 整体批注；若要圈出余数等局部，使用 `annotate_math_bbox` 手动给出局部框。
+
+#### 3.2.4 公式批注
+
+整体批注一个公式、推导组或竖式：
+
+```jsonc
+{
+  "type": "annotate_object",
+  "id": "circle_formula",
+  "targetId": "formula_1",
+  "style": "circle",
+  "padding": 8,
+  "color": "#ef4444",
+  "duration": 500,
+  "narration": "这个公式是关键。"
+}
+```
+
+手动批注公式局部区域：
+
+```jsonc
+{
+  "type": "annotate_math_bbox",
+  "id": "circle_remainder",
+  "targetId": "division_1",
+  "bbox": { "x": 176, "y": 392, "width": 36, "height": 34 },
+  "style": "circle",
+  "padding": 6,
+  "color": "#ef4444",
+  "duration": 500,
+  "narration": "重点看这个余数三。"
+}
+```
+
+- `style` 可选 `"circle"` 或 `"underline"`，默认 `"circle"`。
+- `annotate_object` 使用目标对象保存的整体 bounding box。
+- `annotate_math_bbox` 的 `bbox` 使用画布绝对坐标，适合圈出公式中的某个数、余数、分子、分母等局部。
+
+### 3.3 `draw_line` — 画线
 
 ```jsonc
 {
@@ -78,7 +192,7 @@
 - 线段会从起点平滑延伸到终点。
 - 要画矩形或多边形，可以用多条 `draw_line` 拼出。
 
-### 3.3 `draw_arrow` — 画箭头
+### 3.4 `draw_arrow` — 画箭头
 
 ```jsonc
 {
@@ -101,7 +215,7 @@
 - `headAngle` 控制箭头张角，常用 `24–35`，流程图推荐 `28`。
 - 表达方向、流程、因果、映射、输入输出关系时优先使用 `draw_arrow`。
 
-### 3.4 `draw_path` — 任意路径涂鸦
+### 3.5 `draw_path` — 任意路径涂鸦
 
 ```jsonc
 {
@@ -120,7 +234,7 @@
 - 简单曲线通常 5–12 个点即可，复杂轮廓可用 20–60 个点。
 - `width: 2–4` 适合细线说明，`width: 5–8` 适合重点圈画。
 
-### 3.5 擦除命令
+### 3.6 擦除命令
 
 擦除分三类：
 
@@ -128,7 +242,7 @@
 - 想像橡皮擦一样擦掉画面的一小块 → 用 `erase_area`。
 - 想整张白板重新开始 → 用 `clear_canvas`。
 
-#### 3.5.1 `erase_object` — 删除已绘制对象
+#### 3.6.1 `erase_object` — 删除已绘制对象
 
 删除单个对象：
 
@@ -156,7 +270,7 @@
 - `targetIds` 用于批量删除。
 - 适合删除临时辅助线、临时标签、旧箭头、旧路径。
 
-#### 3.5.2 `erase_area` — 局部擦除指定位置
+#### 3.6.2 `erase_area` — 局部擦除指定位置
 
 矩形擦除：
 
@@ -196,7 +310,7 @@
 - 它不会切分底层线段几何；如果之后删除这个擦除遮罩，被覆盖内容会重新出现。
 - 如果之后改变背景色，旧擦除区域颜色可能与新背景不一致；需要换背景时，优先使用 `clear_canvas`。
 
-#### 3.5.3 `clear_canvas` — 清空整张画布
+#### 3.6.3 `clear_canvas` — 清空整张画布
 
 ```jsonc
 {
@@ -221,7 +335,7 @@
 - 它保留画布尺寸。
 - 如果提供 `background`，会同时更新背景色。
 
-### 3.6 批注图层命令 — 划重点（电子白板批注）
+### 3.7 批注图层命令 — 划重点（电子白板批注）
 
 批注命令写在一个**独立的透明图层**上，始终叠加在所有主画布元素之上。
 批注笔迹用于临时强调重点：下划线保留自然的电子笔迹感；圈画采用平滑闭合路径和基于 `id` 的稳定轻微形变，效果顺滑、柔和、清晰，不是机械标准椭圆。
@@ -233,7 +347,7 @@
 
 使用场景：在主板书绘制完成后，用批注圈出关键公式、在重要文字下方画下划线，然后在讲解下一段前用 `clear_annotations` 清除，保持黑板整洁。
 
-#### 3.6.1 `annotate_underline` — 手绘下划线
+#### 3.7.1 `annotate_underline` — 手绘下划线
 
 ```jsonc
 {
@@ -261,7 +375,7 @@
 - 正确路径/肯定：`"#22c55e"`（绿色）
 - 主题色：`"#2563eb"`（蓝色）
 
-#### 3.6.2 `annotate_circle` — 平滑圈画
+#### 3.7.2 `annotate_circle` — 平滑圈画
 
 ```jsonc
 {
@@ -286,7 +400,7 @@
 - 圈画效果会基于 `id` 生成稳定的轻微形变和平滑闭合曲线；同一个 `id` 每次刷新形状一致。
 - 不需要额外参数，也不要为了模拟“手抖”而随机改动 `cx/cy/rx/ry`。只需准确包裹目标区域，渲染层会自动生成高质量电子白板圈画效果。
 
-#### 3.6.3 `clear_annotations` — 清除批注图层
+#### 3.7.3 `clear_annotations` — 清除批注图层
 
 ```jsonc
 {
@@ -300,7 +414,7 @@
 
 ---
 
-### 3.7 `wait` — 等待用户点击“下一步”
+### 3.8 `wait` — 等待用户点击“下一步”
 
 ```jsonc
 {
@@ -319,7 +433,7 @@
 - `wait` 不需要 `duration`，它由用户主动触发继续；
 - 不要过度使用，通常一段 1–3 分钟讲解里安排 1–3 个等待点即可。
 
-### 3.8 `set_canvas` — 中途调整画布（可选）
+### 3.9 `set_canvas` — 中途调整画布（可选）
 
 可在 `commands` 中再次出现，运行时改变画布尺寸/背景。一般用不上 ——
 统一在顶层 `canvas` 里设置即可。
@@ -330,7 +444,7 @@
 
 一般建议在顶层 `canvas` 中一次性设置画布。只有确实需要中途改变尺寸或背景时才使用。
 
-## 3.9 旁白字段 `narration` 详解
+## 3.10 旁白字段 `narration` 详解
 
 - 强烈建议大部分绘制/擦除命令都带 `narration`。
 - 旁白应是第一人称口语，像老师在讲课。
@@ -343,7 +457,36 @@
 
 ## 4. 完整示例
 
-### 示例 A — 箭头和局部擦除
+### 示例 A — 带余数除法
+
+```json
+{
+  "canvas": { "width": 1200, "height": 800, "background": "#ffffff" },
+  "commands": [
+    { "type": "write_text", "id": "title", "text": "过山车排队问题", "x": 80, "y": 80, "fontSize": 42, "color": "#111111", "duration": 500, "narration": "我们来看这道排队问题。" },
+    { "type": "write_math", "id": "formula_1", "latex": "23 \\div 4 = 5 \\cdots 3", "x": 100, "y": 180, "fontSize": 40, "color": "#111111", "duration": 600, "narration": "二十三除以四，等于五余三。" },
+    { "type": "write_division_layout", "id": "division_1", "dividend": 23, "divisor": 4, "quotient": 5, "remainder": 3, "x": 100, "y": 260, "fontSize": 34, "color": "#111111", "duration": 1000, "narration": "用竖式看，四乘五等于二十，还剩三。" },
+    { "type": "annotate_object", "id": "circle_division", "targetId": "division_1", "style": "circle", "padding": 10, "color": "#ef4444", "width": 3, "duration": 500, "narration": "这个竖式就是本题的计算过程。" },
+    { "type": "write_math_steps", "id": "steps_1", "steps": ["23 \\div 4 = 5 \\cdots 3", "5 \\text{ 辆坐满，还剩 } 3 \\text{ 人}", "5 + 1 = 6"], "x": 520, "y": 280, "fontSize": 34, "lineGap": 58, "color": "#111111", "duration": 1200, "narration": "我们把推理过程分成三行。" }
+  ]
+}
+```
+
+### 示例 B — 勾股定理
+
+```json
+{
+  "canvas": { "width": 1200, "height": 800, "background": "#ffffff" },
+  "commands": [
+    { "type": "write_text", "id": "title", "text": "勾股定理", "x": 80, "y": 80, "fontSize": 44, "color": "#111111", "duration": 500, "narration": "今天我们学习勾股定理。" },
+    { "type": "write_math", "id": "pythagorean", "latex": "a^2 + b^2 = c^2", "x": 100, "y": 160, "fontSize": 46, "color": "#111111", "duration": 600, "narration": "直角三角形三边满足这个关系。" },
+    { "type": "write_math_steps", "id": "example_steps", "steps": ["3^2 + 4^2 = c^2", "9 + 16 = c^2", "25 = c^2", "c = \\sqrt{25} = 5"], "x": 100, "y": 260, "fontSize": 36, "lineGap": 56, "color": "#111111", "duration": 1600, "narration": "我们用三和四做例子，一步一步算出斜边。" },
+    { "type": "annotate_object", "id": "circle_answer", "targetId": "example_steps", "style": "circle", "padding": 10, "color": "#ef4444", "duration": 600, "narration": "最后得到斜边等于五。" }
+  ]
+}
+```
+
+### 示例 C — 箭头和局部擦除
 
 ```json
 {
@@ -360,7 +503,7 @@
 }
 ```
 
-### 示例 B — 清空后重新开始
+### 示例 D — 清空后重新开始
 
 ```json
 {
@@ -392,7 +535,7 @@
 }
 ```
 
-### 示例 D — 擦除临时标注（带旁白）
+### 示例 F — 擦除临时标注（带旁白）
 
 ```json
 {
@@ -435,7 +578,7 @@
 - 整体不是合法 JSON 对象。
 - 缺少 `canvas` 或 `commands`。
 - 命令缺少必填字段。
-- `type` 不在 `{set_canvas, write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, clear_annotations, wait}` 之内。
+- `type` 不在 `{set_canvas, write_text, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, clear_annotations, wait}` 之内。
 - 坐标不是 `[number, number]` 或数值字段类型错误。
 - `draw_path.points` 少于 2 个点。
 - `erase_object` 没有 `targetId` 或 `targetIds`。
@@ -444,14 +587,14 @@
 
 **v1.6 不支持** 的特性，请不要尝试生成：
 - `draw_rect` / `draw_circle`
-- 图片、SVG path、贝塞尔曲线
+- 图片、任意 SVG path、贝塞尔曲线
 - 修改/移动已绘制元素
 - 延时命令、并行播放、循环
 - 字体族选择（默认中文回退到 PingFang SC / Microsoft YaHei）
 - 多人协作、保存/加载
 - 单独删除某一条批注（只能用 `clear_annotations` 清除整个批注图层）
 
-如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；划重点/批注 → 用 `annotate_underline` 或 `annotate_circle`，讲完后用 `clear_annotations` 清除；需要课堂停顿 → 用 `wait`。
+如果用户需要矩形 → 用 4 条 `draw_line` 拼出；自由曲线/圈画/涂鸦 → 用 `draw_path`；规范数学公式 → 用 `write_math` 或 `write_math_steps`；带余数除法竖式 → 用 `write_division_layout`；方向关系 → 用 `draw_arrow`；擦除 → 按场景用 `erase_object`、`erase_area` 或 `clear_canvas`；划重点/批注 → 用 `annotate_underline`、`annotate_circle`、`annotate_object` 或 `annotate_math_bbox`，讲完后用 `clear_annotations` 清除；需要课堂停顿 → 用 `wait`。
 
 ---
 
@@ -462,7 +605,7 @@
 - [ ] 输出是**单一 JSON 对象**，没有任何前后缀文字、Markdown、代码围栏
 - [ ] 顶层有 `canvas` 与 `commands`
 - [ ] `canvas.width` 和 `canvas.height` 都是数字
-- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, clear_annotations, wait, set_canvas}`
+- [ ] `commands` 是数组，且每个元素 `type` 属于 `{write_text, write_math, write_math_steps, write_division_layout, draw_line, draw_arrow, draw_path, erase_object, erase_area, clear_canvas, annotate_underline, annotate_circle, annotate_object, annotate_math_bbox, clear_annotations, wait, set_canvas}`
 - [ ] 每个绘制/遮罩/批注对象都有合法 `id`；动画命令有合理 `duration`
 - [ ] 所有坐标都在 `0..canvas.width` × `0..canvas.height` 范围内
 - [ ] `draw_arrow.from` 是箭尾，`draw_arrow.to` 是箭头尖端，方向没有写反
@@ -471,6 +614,8 @@
 - [ ] `erase_area` 的区域大小合适，不会误擦掉旁边的重要内容
 - [ ] `annotate_underline` 的 `x1/y1/x2/y2` 坐标准确定位在目标文字下方，不与其他元素重叠
 - [ ] `annotate_circle` 的 `cx/cy/rx/ry` 充分包裹目标区域（留足 20–30px 边距），圆心确为目标中心
+- [ ] 复杂公式没有用普通文字硬拼；分数、根号、平方、推导步骤优先使用数学公式命令
+- [ ] 公式局部批注的 `bbox` 使用画布绝对坐标，且确实覆盖目标局部
 - [ ] 批注图层不会遮挡后续需要可见的主层内容；如需清除，已安排 `clear_annotations`
 - [ ] 关键概念后如需互动停顿，已安排 `wait`，且 `message` 简短明确
 - [ ] 文字按估算宽度不会溢出画布

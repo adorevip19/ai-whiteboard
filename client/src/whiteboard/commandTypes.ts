@@ -20,6 +20,48 @@ export interface WriteTextCommand {
   narration?: string;
 }
 
+export interface WriteMathCommand {
+  type: "write_math";
+  id: string;
+  latex: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color?: string;
+  displayMode?: boolean;
+  duration: number;
+  narration?: string;
+}
+
+export interface WriteMathStepsCommand {
+  type: "write_math_steps";
+  id: string;
+  steps: string[];
+  x: number;
+  y: number;
+  fontSize: number;
+  lineGap?: number;
+  color?: string;
+  displayMode?: boolean;
+  duration: number;
+  narration?: string;
+}
+
+export interface WriteDivisionLayoutCommand {
+  type: "write_division_layout";
+  id: string;
+  dividend: number | string;
+  divisor: number | string;
+  quotient: number | string;
+  remainder: number | string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color?: string;
+  duration: number;
+  narration?: string;
+}
+
 export interface DrawLineCommand {
   type: "draw_line";
   id: string;
@@ -125,6 +167,36 @@ export interface AnnotateCircleCommand {
   narration?: string;
 }
 
+export interface AnnotateObjectCommand {
+  type: "annotate_object";
+  id: string;
+  targetId: string;
+  style?: "circle" | "underline";
+  padding?: number;
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface AnnotateMathBboxCommand {
+  type: "annotate_math_bbox";
+  id: string;
+  targetId: string;
+  bbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  style?: "circle" | "underline";
+  padding?: number;
+  color?: string;
+  width?: number;
+  duration: number;
+  narration?: string;
+}
+
 export interface ClearAnnotationsCommand {
   type: "clear_annotations";
   duration?: number;
@@ -134,6 +206,9 @@ export interface ClearAnnotationsCommand {
 export type WhiteboardCommand =
   | SetCanvasCommand
   | WriteTextCommand
+  | WriteMathCommand
+  | WriteMathStepsCommand
+  | WriteDivisionLayoutCommand
   | DrawLineCommand
   | DrawArrowCommand
   | DrawPathCommand
@@ -143,6 +218,8 @@ export type WhiteboardCommand =
   | WaitCommand
   | AnnotateUnderlineCommand
   | AnnotateCircleCommand
+  | AnnotateObjectCommand
+  | AnnotateMathBboxCommand
   | ClearAnnotationsCommand;
 
 export interface CanvasConfig {
@@ -156,6 +233,13 @@ export interface WhiteboardScript {
   commands: WhiteboardCommand[];
 }
 
+export interface ElementBBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 // Rendered element state (snapshot kept on the canvas)
 export type RenderedElement =
   | {
@@ -166,6 +250,48 @@ export type RenderedElement =
       y: number;
       fontSize: number;
       color: string;
+      bbox: ElementBBox;
+      opacity?: number;
+    }
+  | {
+      kind: "math";
+      id: string;
+      latex: string;
+      x: number;
+      y: number;
+      fontSize: number;
+      color: string;
+      displayMode: boolean;
+      bbox: ElementBBox;
+      opacity: number;
+    }
+  | {
+      kind: "math_steps";
+      id: string;
+      steps: string[];
+      visibleCount: number;
+      x: number;
+      y: number;
+      fontSize: number;
+      lineGap: number;
+      color: string;
+      displayMode: boolean;
+      bbox: ElementBBox;
+    }
+  | {
+      kind: "division_layout";
+      id: string;
+      dividend: string;
+      divisor: string;
+      quotient: string;
+      product: string;
+      remainder: string;
+      x: number;
+      y: number;
+      fontSize: number;
+      color: string;
+      stage: number;
+      bbox: ElementBBox;
     }
   | {
       kind: "line";
@@ -176,6 +302,7 @@ export type RenderedElement =
       currentEnd: [number, number];
       color: string;
       width: number;
+      bbox: ElementBBox;
     }
   | {
       kind: "arrow";
@@ -187,6 +314,7 @@ export type RenderedElement =
       width: number;
       headSize: number;
       headAngle: number;
+      bbox: ElementBBox;
     }
   | {
       kind: "path";
@@ -195,6 +323,7 @@ export type RenderedElement =
       currentPoints: [number, number][];
       color: string;
       width: number;
+      bbox: ElementBBox;
     }
   | {
       kind: "eraser";
@@ -206,6 +335,7 @@ export type RenderedElement =
       height: number;
       radius: number;
       color: string;
+      bbox: ElementBBox;
     };
 
 /** A single element on the annotation overlay layer. */
@@ -307,6 +437,116 @@ function validateCommand(
         type: "write_text",
         id: o.id,
         text: o.text,
+        x: o.x,
+        y: o.y,
+        fontSize: o.fontSize,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "write_math") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (write_math) 缺少 id。` };
+    if (typeof o.latex !== "string")
+      return { ok: false, error: `${where} (write_math) 缺少 latex。` };
+    if (typeof o.x !== "number" || typeof o.y !== "number")
+      return { ok: false, error: `${where} (write_math) x / y 必须是数字。` };
+    if (typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (write_math) 缺少 fontSize。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (write_math) 缺少 duration。` };
+    if (o.displayMode !== undefined && typeof o.displayMode !== "boolean")
+      return { ok: false, error: `${where} (write_math) displayMode 必须是布尔值。` };
+    return {
+      ok: true,
+      command: {
+        type: "write_math",
+        id: o.id,
+        latex: o.latex,
+        x: o.x,
+        y: o.y,
+        fontSize: o.fontSize,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        displayMode: typeof o.displayMode === "boolean" ? o.displayMode : false,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "write_math_steps") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (write_math_steps) 缺少 id。` };
+    if (!Array.isArray(o.steps) || o.steps.length === 0)
+      return { ok: false, error: `${where} (write_math_steps) steps 必须是非空字符串数组。` };
+    const steps: string[] = [];
+    for (let j = 0; j < o.steps.length; j++) {
+      if (typeof o.steps[j] !== "string") {
+        return {
+          ok: false,
+          error: `${where} (write_math_steps) steps[${j}] 必须是字符串。`,
+        };
+      }
+      steps.push(o.steps[j]);
+    }
+    if (typeof o.x !== "number" || typeof o.y !== "number")
+      return { ok: false, error: `${where} (write_math_steps) x / y 必须是数字。` };
+    if (typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (write_math_steps) 缺少 fontSize。` };
+    if (o.lineGap !== undefined && typeof o.lineGap !== "number")
+      return { ok: false, error: `${where} (write_math_steps) lineGap 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (write_math_steps) 缺少 duration。` };
+    if (o.displayMode !== undefined && typeof o.displayMode !== "boolean")
+      return { ok: false, error: `${where} (write_math_steps) displayMode 必须是布尔值。` };
+    return {
+      ok: true,
+      command: {
+        type: "write_math_steps",
+        id: o.id,
+        steps,
+        x: o.x,
+        y: o.y,
+        fontSize: o.fontSize,
+        lineGap: typeof o.lineGap === "number" ? o.lineGap : undefined,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        displayMode: typeof o.displayMode === "boolean" ? o.displayMode : false,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "write_division_layout") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (write_division_layout) 缺少 id。` };
+    const required = ["dividend", "divisor", "quotient", "remainder"] as const;
+    for (const key of required) {
+      if (typeof o[key] !== "number" && typeof o[key] !== "string") {
+        return {
+          ok: false,
+          error: `${where} (write_division_layout) ${key} 必须是数字或字符串。`,
+        };
+      }
+    }
+    if (typeof o.x !== "number" || typeof o.y !== "number")
+      return { ok: false, error: `${where} (write_division_layout) x / y 必须是数字。` };
+    if (typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (write_division_layout) 缺少 fontSize。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (write_division_layout) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "write_division_layout",
+        id: o.id,
+        dividend: o.dividend as number | string,
+        divisor: o.divisor as number | string,
+        quotient: o.quotient as number | string,
+        remainder: o.remainder as number | string,
         x: o.x,
         y: o.y,
         fontSize: o.fontSize,
@@ -636,6 +876,93 @@ function validateCommand(
     };
   }
 
+  if (type === "annotate_object") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (annotate_object) 缺少 id。` };
+    if (typeof o.targetId !== "string")
+      return { ok: false, error: `${where} (annotate_object) 缺少 targetId。` };
+    if (o.style !== undefined && o.style !== "circle" && o.style !== "underline") {
+      return {
+        ok: false,
+        error: `${where} (annotate_object) style 必须是 circle 或 underline。`,
+      };
+    }
+    if (o.padding !== undefined && typeof o.padding !== "number")
+      return { ok: false, error: `${where} (annotate_object) padding 必须是数字。` };
+    if (o.width !== undefined && typeof o.width !== "number")
+      return { ok: false, error: `${where} (annotate_object) width 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (annotate_object) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "annotate_object",
+        id: o.id,
+        targetId: o.targetId,
+        style: o.style === "underline" ? "underline" : "circle",
+        padding: typeof o.padding === "number" ? o.padding : 8,
+        color: typeof o.color === "string" ? o.color : "#ef4444",
+        width: typeof o.width === "number" ? o.width : 3,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "annotate_math_bbox") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (annotate_math_bbox) 缺少 id。` };
+    if (typeof o.targetId !== "string")
+      return { ok: false, error: `${where} (annotate_math_bbox) 缺少 targetId。` };
+    if (!o.bbox || typeof o.bbox !== "object") {
+      return { ok: false, error: `${where} (annotate_math_bbox) 缺少 bbox。` };
+    }
+    const bbox = o.bbox as Record<string, unknown>;
+    if (
+      typeof bbox.x !== "number" ||
+      typeof bbox.y !== "number" ||
+      typeof bbox.width !== "number" ||
+      typeof bbox.height !== "number"
+    ) {
+      return {
+        ok: false,
+        error: `${where} (annotate_math_bbox) bbox.x/y/width/height 必须是数字。`,
+      };
+    }
+    if (o.style !== undefined && o.style !== "circle" && o.style !== "underline") {
+      return {
+        ok: false,
+        error: `${where} (annotate_math_bbox) style 必须是 circle 或 underline。`,
+      };
+    }
+    if (o.padding !== undefined && typeof o.padding !== "number")
+      return { ok: false, error: `${where} (annotate_math_bbox) padding 必须是数字。` };
+    if (o.width !== undefined && typeof o.width !== "number")
+      return { ok: false, error: `${where} (annotate_math_bbox) width 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (annotate_math_bbox) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "annotate_math_bbox",
+        id: o.id,
+        targetId: o.targetId,
+        bbox: {
+          x: bbox.x,
+          y: bbox.y,
+          width: bbox.width,
+          height: bbox.height,
+        },
+        style: o.style === "underline" ? "underline" : "circle",
+        padding: typeof o.padding === "number" ? o.padding : 6,
+        color: typeof o.color === "string" ? o.color : "#ef4444",
+        width: typeof o.width === "number" ? o.width : 3,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
   if (type === "clear_annotations") {
     if (o.duration !== undefined && typeof o.duration !== "number")
       return {
@@ -660,6 +987,17 @@ export function describeCommand(cmd: WhiteboardCommand): string {
     const preview =
       cmd.text.length > 16 ? cmd.text.slice(0, 16) + "…" : cmd.text;
     return `写字 “${preview}”`;
+  }
+  if (cmd.type === "write_math") {
+    const preview =
+      cmd.latex.length > 18 ? cmd.latex.slice(0, 18) + "…" : cmd.latex;
+    return `写公式 ${preview}`;
+  }
+  if (cmd.type === "write_math_steps") {
+    return `写公式推导 ${cmd.steps.length} 行`;
+  }
+  if (cmd.type === "write_division_layout") {
+    return `写除法竖式 ${cmd.dividend} ÷ ${cmd.divisor}`;
   }
   if (cmd.type === "draw_line") {
     return `画线 (${cmd.from[0]},${cmd.from[1]}) → (${cmd.to[0]},${cmd.to[1]})`;
@@ -690,6 +1028,12 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "annotate_circle") {
     return `批注圈画 圆心(${cmd.cx},${cmd.cy}) rx=${cmd.rx} ry=${cmd.ry}`;
+  }
+  if (cmd.type === "annotate_object") {
+    return `批注对象 ${cmd.targetId}`;
+  }
+  if (cmd.type === "annotate_math_bbox") {
+    return `批注公式局部 ${cmd.targetId}`;
   }
   if (cmd.type === "clear_annotations") {
     return "清除批注图层";

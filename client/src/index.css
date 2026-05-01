@@ -2,6 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
+.whiteboard-math {
+  display: inline-block;
+  background: transparent;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+.whiteboard-math .katex {
+  color: inherit;
+  font-size: 1em;
+  line-height: 1.2;
+}
+
+.whiteboard-math .katex-display {
+  margin: 0;
+}
+
+.whiteboard-math-error {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 4px;
+  background: rgba(254, 226, 226, 0.75);
+  padding: 4px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.5em;
+  line-height: 1.35;
+}
+
 /* LIGHT MODE */
 :root {
   --button-outline: rgba(0, 0, 0, 0.1);

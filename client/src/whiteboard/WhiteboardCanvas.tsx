@@ -3,6 +3,7 @@
 // and re-render declaratively from React state.
 import { useEffect, useRef, useState } from "react";
 import type { AnnotationElement, CanvasConfig, RenderedElement } from "./commandTypes";
+import { MathRenderer } from "./MathRenderer";
 
 interface Props {
   canvas: CanvasConfig;
@@ -53,6 +54,103 @@ export function WhiteboardCanvas({ canvas, elements, annotations }: Props) {
         data-testid="whiteboard-svg"
       >
         {elements.map((el) => {
+          if (el.kind === "math") {
+            return (
+              <foreignObject
+                key={el.id}
+                x={el.x}
+                y={el.y}
+                width={el.bbox.width}
+                height={el.bbox.height}
+                opacity={el.opacity}
+                data-testid={`math-${el.id}`}
+              >
+                <div>
+                  <MathRenderer
+                    latex={el.latex}
+                    fontSize={el.fontSize}
+                    color={el.color}
+                    displayMode={el.displayMode}
+                  />
+                </div>
+              </foreignObject>
+            );
+          }
+          if (el.kind === "math_steps") {
+            return (
+              <foreignObject
+                key={el.id}
+                x={el.x}
+                y={el.y}
+                width={el.bbox.width}
+                height={el.bbox.height}
+                data-testid={`math-steps-${el.id}`}
+              >
+                <div>
+                  {el.steps.map((step, index) => (
+                    <div
+                      key={`${el.id}-${index}`}
+                      style={{
+                        height: el.lineGap,
+                        opacity: index < el.visibleCount ? 1 : 0,
+                        transition: "opacity 120ms linear",
+                      }}
+                    >
+                      <MathRenderer
+                        latex={step}
+                        fontSize={el.fontSize}
+                        color={el.color}
+                        displayMode={el.displayMode}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </foreignObject>
+            );
+          }
+          if (el.kind === "division_layout") {
+            const digitW = el.fontSize * 0.64;
+            const left = el.x;
+            const top = el.y;
+            const bracketX = left + digitW * 1.6;
+            const dividendX = bracketX + digitW * 0.8;
+            const quotientY = top + el.fontSize;
+            const lineY = top + el.fontSize * 1.35;
+            const dividendY = top + el.fontSize * 2.25;
+            const productY = top + el.fontSize * 3.2;
+            const subtractY = top + el.fontSize * 3.55;
+            const remainderY = top + el.fontSize * 4.45;
+            const bodyW = Math.max(el.dividend.length, el.product.length, el.remainder.length, el.quotient.length) * digitW;
+            const textProps = {
+              fill: el.color,
+              fontSize: el.fontSize,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              dominantBaseline: "alphabetic",
+            } as const;
+
+            return (
+              <g key={el.id} data-testid={`division-${el.id}`}>
+                <text x={dividendX + bodyW - el.quotient.length * digitW} y={quotientY} {...textProps} opacity={el.stage >= 1 ? 1 : 0}>
+                  {el.quotient}
+                </text>
+                <line x1={bracketX + digitW * 0.5} y1={lineY} x2={dividendX + bodyW + digitW * 0.25} y2={lineY} stroke={el.color} strokeWidth={2} opacity={el.stage >= 1 ? 1 : 0} />
+                <path d={`M ${bracketX + digitW * 0.5} ${lineY} Q ${bracketX} ${lineY + el.fontSize * 0.45} ${bracketX + digitW * 0.5} ${dividendY + el.fontSize * 0.2}`} fill="none" stroke={el.color} strokeWidth={2} opacity={el.stage >= 1 ? 1 : 0} />
+                <text x={left} y={dividendY} {...textProps} opacity={el.stage >= 1 ? 1 : 0}>
+                  {el.divisor}
+                </text>
+                <text x={dividendX} y={dividendY} {...textProps} opacity={el.stage >= 1 ? 1 : 0}>
+                  {el.dividend}
+                </text>
+                <text x={dividendX + bodyW - el.product.length * digitW} y={productY} {...textProps} opacity={el.stage >= 2 ? 1 : 0}>
+                  {el.product}
+                </text>
+                <line x1={dividendX - digitW * 0.1} y1={subtractY} x2={dividendX + bodyW + digitW * 0.2} y2={subtractY} stroke={el.color} strokeWidth={2} opacity={el.stage >= 3 ? 1 : 0} />
+                <text x={dividendX + bodyW - el.remainder.length * digitW} y={remainderY} {...textProps} opacity={el.stage >= 4 ? 1 : 0}>
+                  {el.remainder}
+                </text>
+              </g>
+            );
+          }
           if (el.kind === "line") {
             return (
               <line
