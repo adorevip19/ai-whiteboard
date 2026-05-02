@@ -296,7 +296,7 @@ CHROME_EXECUTABLE_PATH=/usr/bin/chromium
 
 1. 如果请求提供 `script` 或 `scriptText`，直接校验并使用脚本。
 2. 如果请求提供 `text` / `imageDataUrl`，先识别图片，再生成白板脚本。
-3. 后端启动 headless Chrome，通过容器内 `127.0.0.1:$PORT` 打开当前 Web 应用，避免生产环境从公网地址回连自身。
+3. 后端启动 headless Chrome 打开当前 Web 应用，并使用生产环境可访问的服务地址完成录制结果上传。
 4. 页面调用 `window.aiWhiteboardRecordScript` 重新播放脚本并录制 WebM。
 5. 如果启用 TTS，页面会逐条生成旁白语音；遇到临时中断会按退避策略自动重试单条旁白。
 6. 页面把 WebM 上传回内部接口 `/api/video/render-jobs/:id/webm`。
