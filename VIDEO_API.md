@@ -10,6 +10,24 @@
 POST /api/video/render
 ```
 
+公网服务地址：
+
+```text
+https://ai-whiteboard-production-94ad.up.railway.app
+```
+
+完整公网接口：
+
+```http
+POST https://ai-whiteboard-production-94ad.up.railway.app/api/video/render
+```
+
+备用 Railway 地址：
+
+```text
+https://ai-whiteboard-production-25cb.up.railway.app
+```
+
 作用：把题目、讲解需求或现成白板脚本转换成一个带画面、白板动画和可选旁白声音的 MP4 视频。
 
 本接口是同步接口：请求会一直等待视频生成完成，然后直接返回 MP4 二进制。前端页面在 AI 讲解脚本生成成功后，会主动调用本接口进行后台预渲染；预渲染完成后，用户点击“下载 MP4”只下载已经生成好的文件，不会再次触发渲染。
