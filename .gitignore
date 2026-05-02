@@ -6,3 +6,5 @@ dist/
 .env.local
 .vscode/
 .idea/
+.claude/
+push.command
