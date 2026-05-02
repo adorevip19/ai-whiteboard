@@ -10,23 +10,31 @@
 POST /api/video/render
 ```
 
-公网服务地址：
+当前生产服务地址（Railway，已验证）：
 
 ```text
 https://ai-whiteboard-production-94ad.up.railway.app
 ```
 
-完整公网接口：
+完整生产接口：
 
 ```http
 POST https://ai-whiteboard-production-94ad.up.railway.app/api/video/render
 ```
 
-备用 Railway 地址：
+调用方应优先把服务地址配置成变量，例如：
+
+```env
+AI_WHITEBOARD_VIDEO_API_BASE_URL=https://ai-whiteboard-production-94ad.up.railway.app
+```
+
+本地开发地址仅用于开发机调试，不应给线上 AI 或外部服务默认使用：
 
 ```text
-https://ai-whiteboard-production-25cb.up.railway.app
+http://localhost:5001
 ```
+
+如果 Railway 重新生成域名、切换自定义域名，或更换主服务地址，必须同步更新本节和后文所有示例。
 
 作用：把题目、讲解需求或现成白板脚本转换成一个带画面、白板动画和可选旁白声音的 MP4 视频。
 
@@ -180,7 +188,9 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 成功时返回二进制 MP4。示例：
 
 ```bash
-curl -X POST http://localhost:5001/api/video/render \
+API_BASE_URL="https://ai-whiteboard-production-94ad.up.railway.app"
+
+curl -X POST "$API_BASE_URL/api/video/render" \
   -H "Content-Type: application/json" \
   -d @payload.json \
   --output whiteboard-lecture.mp4
@@ -189,7 +199,11 @@ curl -X POST http://localhost:5001/api/video/render \
 Node.js 示例：
 
 ```js
-const response = await fetch("http://localhost:5001/api/video/render", {
+const apiBaseUrl =
+  process.env.AI_WHITEBOARD_VIDEO_API_BASE_URL ??
+  "https://ai-whiteboard-production-94ad.up.railway.app";
+
+const response = await fetch(`${apiBaseUrl}/api/video/render`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -263,13 +277,18 @@ AZURE_SPEECH_VOICE=zh-CN-XiaoxiaoNeural
 CHROME_EXECUTABLE_PATH=/path/to/chrome-or-chromium
 ```
 
-本地 macOS 默认会尝试使用：
+服务端会依次尝试 `CHROME_EXECUTABLE_PATH`、`GOOGLE_CHROME_BIN` 以及常见 Linux/macOS 路径。本地 macOS 默认会尝试使用：
 
 ```text
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
-生产环境必须确保 `CHROME_EXECUTABLE_PATH` 和 `ffmpeg` 可用。
+生产环境必须确保 Chrome/Chromium 和 `ffmpeg` 可用。Railway 当前使用 Railpack 构建时，需要配置运行时 apt 包：
+
+```env
+RAILPACK_DEPLOY_APT_PACKAGES=chromium ffmpeg
+CHROME_EXECUTABLE_PATH=/usr/bin/chromium
+```
 
 ## 内部流程
 
@@ -277,12 +296,16 @@ CHROME_EXECUTABLE_PATH=/path/to/chrome-or-chromium
 
 1. 如果请求提供 `script` 或 `scriptText`，直接校验并使用脚本。
 2. 如果请求提供 `text` / `imageDataUrl`，先识别图片，再生成白板脚本。
-3. 后端启动 headless Chrome 打开当前 Web 应用。
+3. 后端启动 headless Chrome，通过容器内 `127.0.0.1:$PORT` 打开当前 Web 应用，避免生产环境从公网地址回连自身。
 4. 页面调用 `window.aiWhiteboardRecordScript` 重新播放脚本并录制 WebM。
 5. 如果启用 TTS，页面会逐条生成旁白语音；遇到临时中断会按退避策略自动重试单条旁白。
 6. 页面把 WebM 上传回内部接口 `/api/video/render-jobs/:id/webm`。
 7. 后端用 `ffmpeg` 转成 MP4。
 8. 后端把 MP4 作为响应体返回。
+
+`/api/video/render-jobs/:id/webm` 是服务端和 headless 浏览器之间使用的内部上传接口，外部调用方不应直接调用。
+
+`/api/video/convert-mp4` 是前端旧导出链路使用的 WebM 转 MP4 辅助接口；外部 AI 生成完整讲解视频时应调用 `/api/video/render`。
 
 ## 维护规则
 
