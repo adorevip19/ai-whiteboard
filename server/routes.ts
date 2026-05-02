@@ -134,7 +134,15 @@ function failVideoRenderJob(id: string, error: Error) {
 }
 
 function getBaseUrl(req: Request) {
-  return `${req.protocol}://${req.get("host")}`;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "")
+    .split(",")[0]
+    .trim();
+  const proto = forwardedProto || req.protocol;
+  const host = forwardedHost || req.get("host");
+  return `${proto}://${host}`;
 }
 
 function stringifyScriptInput(value: unknown) {
