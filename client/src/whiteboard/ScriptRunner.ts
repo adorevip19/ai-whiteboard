@@ -5,6 +5,7 @@ import type {
   AnnotationElement,
   CanvasConfig,
   ElementBBox,
+  LayoutSlot,
   RenderedElement,
   WhiteboardCommand,
   WhiteboardScript,
@@ -29,6 +30,7 @@ export interface RunnerCallbacks {
 
 export interface RunnerOptions {
   playbackSpeed?: number;
+  startIndex?: number;
 }
 
 export interface WaitState {
@@ -39,7 +41,10 @@ type PageRuntimeState = {
   elements: RenderedElement[];
   annotations: AnnotationElement[];
   canvas: CanvasConfig;
+  layoutSlots: Map<string, LayoutSlot>;
 };
+
+const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
 
 export class ScriptRunner {
   private script: WhiteboardScript;
@@ -56,12 +61,16 @@ export class ScriptRunner {
   private totalPausedMs = 0;
   private currentPageId = "default";
   private pageStates = new Map<string, PageRuntimeState>();
+  private layoutSlots = new Map<string, LayoutSlot>();
+  private startIndex: number;
+  private suppressCallbacks = false;
 
   constructor(script: WhiteboardScript, cb: RunnerCallbacks, options: RunnerOptions = {}) {
     this.script = script;
     this.cb = cb;
     this.canvas = script.canvas;
     this.playbackSpeed = this.normalizePlaybackSpeed(options.playbackSpeed);
+    this.startIndex = this.normalizeStartIndex(options.startIndex);
   }
 
   cancel() {
@@ -118,18 +127,37 @@ export class ScriptRunner {
       this.canvas = this.script.canvas;
       this.currentPageId = this.script.pages?.[0]?.id ?? "default";
       this.pageStates = new Map();
+      this.layoutSlots = new Map();
       this.saveCurrentPage();
       this.paused = false;
       this.pausedAt = null;
       this.totalPausedMs = 0;
-      this.cb.onCanvasChange(this.canvas);
-      this.cb.onElementsChange([]);
-      this.cb.onAnnotationsChange([]);
+      const total = this.script.commands.length;
+      const startIndex = Math.min(this.startIndex, total);
+      if (startIndex === 0) {
+        this.cb.onCanvasChange(this.canvas);
+        this.cb.onElementsChange([]);
+        this.cb.onAnnotationsChange([]);
+      }
 
       this.cb.onWaitChange(null);
       this.cb.onNarrationChange(null);
-      const total = this.script.commands.length;
-      for (let i = 0; i < total; i++) {
+
+      if (startIndex > 0) {
+        this.suppressCallbacks = true;
+        for (let i = 0; i < startIndex; i++) {
+          if (this.cancelled) return;
+          const cmd = this.script.commands[i];
+          if (cmd.type === "laser_pointer" || cmd.type === "wait") continue;
+          await this.runCommand(this.createFastForwardCommand(cmd));
+        }
+        this.suppressCallbacks = false;
+        this.cb.onCanvasChange(this.canvas);
+        this.cb.onElementsChange([...this.elements]);
+        this.cb.onAnnotationsChange([...this.annotations]);
+      }
+
+      for (let i = startIndex; i < total; i++) {
         if (this.cancelled) return;
         this.cb.onStepChange(i, total);
         // Surface narration BEFORE drawing so the subtitle leads the strokes.
@@ -141,6 +169,9 @@ export class ScriptRunner {
           cmd.type === "write_math" ||
           cmd.type === "write_math_steps" ||
           cmd.type === "write_division_layout" ||
+          cmd.type === "layout_page" ||
+          cmd.type === "write_paragraph" ||
+          cmd.type === "revision_compare" ||
           cmd.type === "draw_line" ||
           cmd.type === "draw_arrow" ||
           cmd.type === "draw_path" ||
@@ -195,11 +226,13 @@ export class ScriptRunner {
   private commit() {
     // Push a shallow copy so React detects the change.
     this.saveCurrentPage();
+    if (this.suppressCallbacks) return;
     this.cb.onElementsChange([...this.elements]);
   }
 
   private commitAnnotations() {
     this.saveCurrentPage();
+    if (this.suppressCallbacks) return;
     this.cb.onAnnotationsChange([...this.annotations]);
   }
 
@@ -208,6 +241,7 @@ export class ScriptRunner {
       elements: [...this.elements],
       annotations: [...this.annotations],
       canvas: this.canvas,
+      layoutSlots: new Map(this.layoutSlots),
     });
   }
 
@@ -218,15 +252,19 @@ export class ScriptRunner {
       this.elements = [...state.elements];
       this.annotations = [...state.annotations];
       this.canvas = state.canvas;
+      this.layoutSlots = new Map(state.layoutSlots);
     } else {
       this.elements = [];
       this.annotations = [];
       this.canvas = this.script.canvas;
+      this.layoutSlots = new Map();
       this.saveCurrentPage();
     }
-    this.cb.onCanvasChange(this.canvas);
-    this.cb.onElementsChange([...this.elements]);
-    this.cb.onAnnotationsChange([...this.annotations]);
+    if (!this.suppressCallbacks) {
+      this.cb.onCanvasChange(this.canvas);
+      this.cb.onElementsChange([...this.elements]);
+      this.cb.onAnnotationsChange([...this.annotations]);
+    }
   }
 
   private normalizePlaybackSpeed(speed: unknown) {
@@ -235,8 +273,21 @@ export class ScriptRunner {
       : 1;
   }
 
+  private normalizeStartIndex(index: unknown) {
+    return typeof index === "number" && Number.isFinite(index)
+      ? Math.max(0, Math.floor(index))
+      : 0;
+  }
+
+  private createFastForwardCommand(cmd: WhiteboardCommand): WhiteboardCommand {
+    const copy = JSON.parse(JSON.stringify(cmd)) as Record<string, unknown>;
+    delete copy.narration;
+    if (typeof copy.duration === "number") copy.duration = 1;
+    return copy as unknown as WhiteboardCommand;
+  }
+
   private durationFor(duration: number) {
-    return Math.max(duration / this.playbackSpeed, 1);
+    return Math.max(duration / (this.playbackSpeed * WHITEBOARD_ANIMATION_SPEED_MULTIPLIER), 1);
   }
 
   private now() {
@@ -280,6 +331,104 @@ export class ScriptRunner {
       width += /[一-鿿]/.test(char) ? fontSize : fontSize * 0.58;
     }
     return Math.max(width, fontSize);
+  }
+
+  private buildLayoutSlots(
+    variant: Extract<WhiteboardCommand, { type: "layout_page" }>["variant"],
+  ): LayoutSlot[] {
+    const margin = 72;
+    const top = 145;
+    const bottom = 64;
+    const gap = 28;
+    const width = this.canvas.width - margin * 2;
+    const height = this.canvas.height - top - bottom;
+    if (variant === "two_column") {
+      const colW = (width - gap) / 2;
+      return [
+        { id: "left", x: margin, y: top, width: colW, height, label: "左栏" },
+        { id: "right", x: margin + colW + gap, y: top, width: colW, height, label: "右栏" },
+      ];
+    }
+    if (variant === "revision") {
+      const noteH = Math.max(92, height * 0.22);
+      const cardH = height - noteH - gap;
+      const colW = (width - gap) / 2;
+      return [
+        { id: "before", x: margin, y: top, width: colW, height: cardH, label: "原文" },
+        { id: "after", x: margin + colW + gap, y: top, width: colW, height: cardH, label: "修改后" },
+        { id: "note", x: margin, y: top + cardH + gap, width, height: noteH, label: "点评" },
+      ];
+    }
+    if (variant === "three_panel") {
+      const colW = (width - gap * 2) / 3;
+      return [
+        { id: "left", x: margin, y: top, width: colW, height, label: "一" },
+        { id: "middle", x: margin + colW + gap, y: top, width: colW, height, label: "二" },
+        { id: "right", x: margin + (colW + gap) * 2, y: top, width: colW, height, label: "三" },
+      ];
+    }
+    return [{ id: "content", x: margin, y: top, width, height, label: "内容" }];
+  }
+
+  private resolveSlotRect(
+    command: Extract<WhiteboardCommand, { type: "write_paragraph" | "revision_compare" }>,
+  ): ElementBBox {
+    if (command.slotId) {
+      const slot = this.layoutSlots.get(command.slotId);
+      if (!slot) {
+        throw new Error(`找不到版式槽位: ${command.slotId}`);
+      }
+      return { x: slot.x, y: slot.y, width: slot.width, height: slot.height };
+    }
+    if (
+      typeof command.x === "number" &&
+      typeof command.y === "number" &&
+      typeof command.width === "number" &&
+      typeof command.height === "number"
+    ) {
+      return { x: command.x, y: command.y, width: command.width, height: command.height };
+    }
+    throw new Error(`${command.type} 必须提供 slotId 或 x/y/width/height。`);
+  }
+
+  private resolveRevisionRect(cmd: Extract<WhiteboardCommand, { type: "revision_compare" }>) {
+    if (cmd.slotId && this.layoutSlots.has("before") && this.layoutSlots.has("after")) {
+      const related = ["before", "after", "note"]
+        .map((id) => this.layoutSlots.get(id))
+        .filter((slot): slot is LayoutSlot => Boolean(slot));
+      if (related.some((slot) => slot.id === cmd.slotId)) {
+        const x1 = Math.min(...related.map((slot) => slot.x));
+        const y1 = Math.min(...related.map((slot) => slot.y));
+        const x2 = Math.max(...related.map((slot) => slot.x + slot.width));
+        const y2 = Math.max(...related.map((slot) => slot.y + slot.height));
+        return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+      }
+    }
+    return this.resolveSlotRect(cmd);
+  }
+
+  private wrapTextLines(text: string, fontSize: number, maxWidth: number) {
+    const paragraphs = text.split(/\n+/);
+    const lines: string[] = [];
+    for (const paragraph of paragraphs) {
+      const chars = Array.from(paragraph.trim());
+      if (chars.length === 0) {
+        lines.push("");
+        continue;
+      }
+      let current = "";
+      for (const char of chars) {
+        const next = current + char;
+        if (current && this.estimateTextWidth(next, fontSize) > maxWidth) {
+          lines.push(current);
+          current = char;
+        } else {
+          current = next;
+        }
+      }
+      if (current) lines.push(current);
+    }
+    return lines.length > 0 ? lines : [""];
   }
 
   private reflowTextSegments(el: Extract<RenderedElement, { kind: "text_segments" }>) {
@@ -749,7 +898,7 @@ export class ScriptRunner {
         height: cmd.height,
         background: cmd.background ?? "#ffffff",
       };
-      this.cb.onCanvasChange(this.canvas);
+      if (!this.suppressCallbacks) this.cb.onCanvasChange(this.canvas);
       return Promise.resolve();
     }
     if (cmd.type === "switch_page") {
@@ -769,6 +918,15 @@ export class ScriptRunner {
     }
     if (cmd.type === "write_division_layout") {
       return this.animateDivisionLayout(cmd);
+    }
+    if (cmd.type === "layout_page") {
+      return this.animateLayoutPage(cmd);
+    }
+    if (cmd.type === "write_paragraph") {
+      return this.animateParagraph(cmd);
+    }
+    if (cmd.type === "revision_compare") {
+      return this.animateRevisionCompare(cmd);
     }
     if (cmd.type === "draw_line") {
       return this.animateLine(cmd);
@@ -880,6 +1038,173 @@ export class ScriptRunner {
     this.saveCurrentPage();
     this.loadPage(cmd.pageId);
     await this.wait(cmd.duration ?? 400);
+  }
+
+  private animateLayoutPage(cmd: Extract<WhiteboardCommand, { type: "layout_page" }>) {
+    return new Promise<void>((resolve) => {
+      const slots = this.buildLayoutSlots(cmd.variant);
+      this.layoutSlots = new Map(slots.map((slot) => [slot.id, slot]));
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "layout",
+        id: cmd.id,
+        variant: cmd.variant,
+        title: cmd.title,
+        subtitle: cmd.subtitle,
+        theme: cmd.theme ?? "default",
+        slots,
+        progress: 0,
+        bbox: { x: 0, y: 0, width: this.canvas.width, height: this.canvas.height },
+      });
+      this.commit();
+
+      const duration = this.durationFor(cmd.duration);
+      const start = this.now();
+      const tick = () => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((this.now() - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "layout") {
+          target.progress = this.easeProgress(t, "easeOut");
+          this.commit();
+        }
+        if (t >= 1) resolve();
+        else this.currentRaf = requestAnimationFrame(tick);
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateParagraph(cmd: Extract<WhiteboardCommand, { type: "write_paragraph" }>) {
+    return new Promise<void>((resolve) => {
+      const rect = this.resolveSlotRect(cmd);
+      const padding = cmd.padding ?? 18;
+      const fontSize = cmd.fontSize;
+      const lineGap = cmd.lineGap ?? fontSize * 1.65;
+      const lines = this.wrapTextLines(cmd.text, fontSize, Math.max(20, rect.width - padding * 2));
+      const maxLines = Math.max(1, Math.floor((rect.height - padding * 2) / lineGap));
+      const visibleLineCount = Math.max(1, Math.min(lines.length, maxLines));
+      const measuredWidth = Math.min(
+        Math.max(20, rect.width - padding * 2),
+        Math.max(fontSize, ...lines.slice(0, visibleLineCount).map((line) => this.estimateTextWidth(line, fontSize))),
+      );
+      const textBbox = {
+        x: rect.x + padding,
+        y: rect.y + padding,
+        width: measuredWidth,
+        height: Math.max(
+          fontSize,
+          Math.min(Math.max(fontSize, rect.height - padding * 2), fontSize * 1.2 + (visibleLineCount - 1) * lineGap),
+        ),
+      };
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "paragraph",
+        id: cmd.id,
+        lines,
+        visibleChars: 0,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        fontSize,
+        lineGap,
+        color: cmd.color ?? "#111111",
+        padding,
+        bbox: textBbox,
+      });
+      this.commit();
+
+      const total = Math.max(1, lines.reduce((sum, line) => sum + Array.from(line).length, 0));
+      const duration = this.durationFor(cmd.duration);
+      const start = this.now();
+      const tick = () => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((this.now() - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "paragraph") {
+          target.visibleChars = Math.ceil(t * total);
+          this.commit();
+        }
+        if (t >= 1) {
+          if (target && target.kind === "paragraph") target.visibleChars = total;
+          this.commit();
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
+  }
+
+  private animateRevisionCompare(
+    cmd: Extract<WhiteboardCommand, { type: "revision_compare" }>,
+  ) {
+    return new Promise<void>((resolve) => {
+      const rect = this.resolveRevisionRect(cmd);
+      const fontSize = cmd.fontSize ?? 28;
+      const cardGap = 26;
+      const noteH = cmd.note ? Math.min(92, rect.height * 0.24) : 0;
+      const bodyH = rect.height - noteH - (cmd.note ? 18 : 0);
+      const cardW = (rect.width - cardGap) / 2;
+      const textW = Math.max(20, cardW - 40);
+      const beforeLines = this.wrapTextLines(cmd.before, fontSize, textW);
+      const afterLines = this.wrapTextLines(cmd.after, fontSize, textW);
+      const noteLines = cmd.note ? this.wrapTextLines(cmd.note, Math.max(20, fontSize - 4), rect.width - 40) : [];
+      const elIndex = this.elements.length;
+      this.elements.push({
+        kind: "revision_compare",
+        id: cmd.id,
+        beforeLines,
+        afterLines,
+        noteLines,
+        visibleBeforeChars: 0,
+        visibleAfterChars: 0,
+        visibleNoteChars: 0,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        fontSize,
+        beforeTitle: cmd.beforeTitle ?? "原句",
+        afterTitle: cmd.afterTitle ?? "修改后",
+        note: cmd.note,
+        progress: 0,
+        bbox: rect,
+      });
+      this.commit();
+
+      const beforeTotal = Math.max(1, beforeLines.reduce((sum, line) => sum + Array.from(line).length, 0));
+      const afterTotal = Math.max(1, afterLines.reduce((sum, line) => sum + Array.from(line).length, 0));
+      const noteTotal = Math.max(1, noteLines.reduce((sum, line) => sum + Array.from(line).length, 0));
+      const duration = this.durationFor(cmd.duration);
+      const start = this.now();
+      const tick = () => {
+        if (this.cancelled) {
+          resolve();
+          return;
+        }
+        const t = Math.min((this.now() - start) / duration, 1);
+        const target = this.elements[elIndex];
+        if (target && target.kind === "revision_compare") {
+          target.progress = this.easeProgress(Math.min(t * 1.3, 1), "easeOut");
+          target.visibleBeforeChars = Math.ceil(Math.min(t / 0.38, 1) * beforeTotal);
+          target.visibleAfterChars = Math.ceil(Math.max(0, Math.min((t - 0.32) / 0.42, 1)) * afterTotal);
+          target.visibleNoteChars = Math.ceil(Math.max(0, Math.min((t - 0.72) / 0.28, 1)) * noteTotal);
+          this.commit();
+        }
+        if (t >= 1) resolve();
+        else this.currentRaf = requestAnimationFrame(tick);
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
   }
 
   private animateText(cmd: Extract<WhiteboardCommand, { type: "write_text" }>) {
@@ -1539,77 +1864,39 @@ export class ScriptRunner {
   }
 
   private animateBrace(cmd: Extract<WhiteboardCommand, { type: "draw_brace" }>) {
-    return new Promise<void>((resolve) => {
-      const vertical = cmd.orientation === "left" || cmd.orientation === "right";
-      const minX = Math.min(cmd.from[0], cmd.to[0]);
-      const maxX = Math.max(cmd.from[0], cmd.to[0]);
-      const minY = Math.min(cmd.from[1], cmd.to[1]);
-      const maxY = Math.max(cmd.from[1], cmd.to[1]);
-      const span = Math.max(
-        vertical ? maxY - minY : maxX - minX,
-        24,
-      );
-      const depth = cmd.depth ?? Math.max(18, Math.min(span * 0.18, 54));
-      const x = vertical
-        ? (cmd.from[0] + cmd.to[0]) / 2
-        : minX + (maxX - minX) / 2;
-      const y = vertical
-        ? minY + (maxY - minY) / 2
-        : (cmd.from[1] + cmd.to[1]) / 2;
-      const glyph: "{" | "}" =
-        cmd.orientation === "right" || cmd.orientation === "down" ? "{" : "}";
-      const rotation =
-        cmd.orientation === "down" ? 90 : cmd.orientation === "up" ? -90 : 0;
-      const fontSize = span * 1.08;
-      const bbox = vertical
-        ? {
-            x: x - depth,
-            y: minY,
-            width: depth * 2,
-            height: span,
-          }
-        : {
-            x: minX,
-            y: y - depth,
-            width: span,
-            height: depth * 2,
-          };
-      const elIndex = this.elements.length;
-      this.elements.push({
-        kind: "brace_glyph",
-        id: cmd.id,
-        glyph,
-        x,
-        y,
-        fontSize,
-        color: cmd.color ?? "#111111",
-        rotation,
-        progress: 0,
-        bbox,
-      });
-      this.commit();
-
-      const duration = this.durationFor(cmd.duration);
-      const start = this.now();
-      const tick = (now: number) => {
-        if (this.cancelled) {
-          resolve();
-          return;
+    const vertical = cmd.orientation === "left" || cmd.orientation === "right";
+    const minX = Math.min(cmd.from[0], cmd.to[0]);
+    const maxX = Math.max(cmd.from[0], cmd.to[0]);
+    const minY = Math.min(cmd.from[1], cmd.to[1]);
+    const maxY = Math.max(cmd.from[1], cmd.to[1]);
+    const span = Math.max(vertical ? maxY - minY : maxX - minX, 24);
+    const depth = cmd.depth ?? Math.max(18, Math.min(span * 0.18, 54));
+    const centerX = (cmd.from[0] + cmd.to[0]) / 2;
+    const centerY = (cmd.from[1] + cmd.to[1]) / 2;
+    const bbox = vertical
+      ? {
+          x: centerX - depth,
+          y: minY,
+          width: depth * 2,
+          height: span,
         }
-        const t = Math.min((this.now() - start) / duration, 1);
-        const target = this.elements[elIndex];
-        if (target && target.kind === "brace_glyph") {
-          target.progress = this.easeProgress(t, "easeOut");
-          this.commit();
-        }
-        if (t >= 1) {
-          resolve();
-        } else {
-          this.currentRaf = requestAnimationFrame(tick);
-        }
-      };
-      this.currentRaf = requestAnimationFrame(tick);
-    });
+      : {
+          x: minX,
+          y: centerY - depth,
+          width: span,
+          height: depth * 2,
+        };
+    const element: Extract<RenderedElement, { kind: "shape" }> = {
+      kind: "shape",
+      id: cmd.id,
+      shapeType: "brace",
+      pathD: this.bracePath(cmd.from, cmd.to, cmd.orientation, depth),
+      color: cmd.color ?? "#111111",
+      width: cmd.width ?? 3,
+      progress: 0,
+      bbox,
+    };
+    return this.animateShape(element, cmd.duration);
   }
 
   private moveObject(cmd: Extract<WhiteboardCommand, { type: "move_object" }>) {
@@ -2237,9 +2524,10 @@ export class ScriptRunner {
   ) {
     this.elements = [];
     this.annotations = [];
+    this.layoutSlots = new Map();
     if (cmd.background) {
       this.canvas = { ...this.canvas, background: cmd.background };
-      this.cb.onCanvasChange(this.canvas);
+      if (!this.suppressCallbacks) this.cb.onCanvasChange(this.canvas);
     }
     this.commit();
     this.commitAnnotations();

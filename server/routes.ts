@@ -2,7 +2,7 @@ import express, { type Express, type Request, type Response } from "express";
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,19 +13,33 @@ import {
   preflightScriptText,
   recognizeProblemFromImage,
   repairAiScript,
+  summarizeScriptKnowledge,
 } from "./aiScript";
 import { renderScriptToWebmInHeadlessBrowser } from "./videoRender";
+import type {
+  WhiteboardCommand,
+  WhiteboardScript,
+} from "../client/src/whiteboard/commandTypes";
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
 const DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
 const MAX_IMAGE_DATA_URL_LENGTH = 14 * 1024 * 1024;
 const IMAGE_DATA_URL_PATTERN = /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/;
 const MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024;
+const MAX_SHARE_SCRIPT_TEXT_LENGTH = 2 * 1024 * 1024;
+const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{10,48}$/;
+const LECTURE_ID_PATTERN = /^[A-Za-z0-9_-]{10,48}$/;
+const GROUP_ID_PATTERN = /^[A-Za-z0-9_-]{10,48}$/;
+const GROUP_SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{10,48}$/;
+
+type VideoRenderPayload =
+  | { kind: "webm"; buffer: Buffer }
+  | { kind: "webmSegments"; buffers: Buffer[] };
 
 const videoRenderJobs = new Map<
   string,
   {
-    resolve: (buffer: Buffer) => void;
+    resolve: (payload: VideoRenderPayload) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
   }
@@ -103,9 +117,71 @@ async function convertWebmBufferToMp4(webm: Buffer) {
   }
 }
 
+async function convertWebmSegmentsToMp4(segments: Buffer[]) {
+  if (segments.length === 1) return convertWebmBufferToMp4(segments[0]);
+
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ai-whiteboard-video-segments-"));
+  const listPath = path.join(workDir, "segments.txt");
+  const outputPath = path.join(workDir, "whiteboard-lecture.mp4");
+  try {
+    const mp4SegmentPaths: string[] = [];
+    for (let i = 0; i < segments.length; i++) {
+      const inputPath = path.join(workDir, `segment-${String(i).padStart(3, "0")}.webm`);
+      const mp4SegmentPath = path.join(workDir, `segment-${String(i).padStart(3, "0")}.mp4`);
+      await fs.writeFile(inputPath, segments[i]);
+      await runFfmpeg([
+        "-y",
+        "-i",
+        inputPath,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        mp4SegmentPath,
+      ]);
+      mp4SegmentPaths.push(mp4SegmentPath);
+    }
+    await fs.writeFile(
+      listPath,
+      mp4SegmentPaths.map((inputPath) => `file '${inputPath}'`).join("\n"),
+    );
+    await runFfmpeg([
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-vf",
+      "fps=15,format=yuv420p",
+      "-af",
+      "aresample=async=1:first_pts=0",
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 function createVideoRenderJob() {
   const id = randomUUID();
-  const promise = new Promise<Buffer>((resolve, reject) => {
+  const promise = new Promise<VideoRenderPayload>((resolve, reject) => {
     const timeout = setTimeout(() => {
       videoRenderJobs.delete(id);
       reject(new Error("服务端视频录制超时。"));
@@ -121,7 +197,16 @@ function completeVideoRenderJob(id: string, buffer: Buffer) {
   if (!job) return false;
   clearTimeout(job.timeout);
   videoRenderJobs.delete(id);
-  job.resolve(buffer);
+  job.resolve({ kind: "webm", buffer });
+  return true;
+}
+
+function completeVideoRenderJobSegments(id: string, buffers: Buffer[]) {
+  const job = videoRenderJobs.get(id);
+  if (!job) return false;
+  clearTimeout(job.timeout);
+  videoRenderJobs.delete(id);
+  job.resolve({ kind: "webmSegments", buffers });
   return true;
 }
 
@@ -143,6 +228,110 @@ function stringifyScriptInput(value: unknown) {
   return "";
 }
 
+function createShareId() {
+  return randomBytes(12).toString("base64url");
+}
+
+function createLectureId() {
+  return randomBytes(12).toString("base64url");
+}
+
+function createGroupId() {
+  return randomBytes(12).toString("base64url");
+}
+
+function createGroupShareId() {
+  return randomBytes(12).toString("base64url");
+}
+
+function inferLectureTitle(script: WhiteboardScript) {
+  const firstText = script.commands.find(
+    (command) => "text" in command && typeof command.text === "string" && command.text.trim(),
+  ) as { text?: string } | undefined;
+  return firstText?.text?.trim().slice(0, 48) || "未命名讲解";
+}
+
+function getDescendantGroupIds(
+  groups: Array<{ id: string; parentId: string | null }>,
+  rootId: string,
+) {
+  const ids = new Set([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const group of groups) {
+      if (group.parentId && ids.has(group.parentId) && !ids.has(group.id)) {
+        ids.add(group.id);
+        changed = true;
+      }
+    }
+  }
+  return ids;
+}
+
+function getCommandNarration(command: WhiteboardCommand) {
+  return "narration" in command && typeof command.narration === "string"
+    ? command.narration.trim()
+    : "";
+}
+
+function estimateTtsDurationMs(text: string) {
+  const chars = Array.from(text.trim());
+  if (chars.length === 0) return 0;
+
+  let cjk = 0;
+  let latin = 0;
+  let punctuation = 0;
+  for (const char of chars) {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (
+      (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    ) {
+      cjk += 1;
+    }
+    else if (/[A-Za-z0-9]/.test(char)) latin += 1;
+    else if (!/\s/.test(char)) punctuation += 1;
+  }
+
+  const baseMs = cjk * 260 + latin * 85 + punctuation * 180;
+  return Math.max(1200, Math.round(baseMs + 600));
+}
+
+function findTtsDurationMismatches(script: WhiteboardScript) {
+  return script.commands.flatMap((command, index) => {
+    const narration = getCommandNarration(command);
+    if (!narration || !("duration" in command) || typeof command.duration !== "number") {
+      return [];
+    }
+
+    const estimatedMs = estimateTtsDurationMs(narration);
+    if (estimatedMs <= 0) return [];
+
+    const scriptMs = command.duration;
+    const ratio = scriptMs / estimatedMs;
+    const absoluteDelta = Math.abs(scriptMs - estimatedMs);
+    const isClearlyTooLong = scriptMs > 6000 && ratio >= 4 && absoluteDelta >= 6000;
+    const isClearlyTooShort = estimatedMs > 6000 && ratio <= 0.25 && absoluteDelta >= 6000;
+    if (!isClearlyTooLong && !isClearlyTooShort) return [];
+
+    return [
+      {
+        commandIndex: index,
+        commandId: "id" in command && typeof command.id === "string" ? command.id : undefined,
+        commandType: command.type,
+        durationMs: Math.round(scriptMs),
+        estimatedTtsMs: estimatedMs,
+        narrationPreview:
+          narration.length > 40 ? `${narration.slice(0, 40)}...` : narration,
+        message: `第 ${index + 1} 条命令 (${command.type}) 的 duration=${Math.round(
+          scriptMs,
+        )}ms，与旁白估算时长约 ${estimatedMs}ms 差距过大。`,
+      },
+    ];
+  });
+}
+
 function composePromptFromRecognizedImage(params: {
   text: string;
   problemText: string;
@@ -155,8 +344,8 @@ function composePromptFromRecognizedImage(params: {
   return [
     params.text ? `用户补充要求：\n${params.text}` : "",
     params.mode === "concise"
-      ? "讲解模式：简洁讲解。只点破关键卡点，但仍配合白板动作展示关键关系。"
-      : "讲解模式：详细讲解。必须先读题，再分析题干，然后完整讲解。",
+      ? "讲解模式：简洁讲解。开场第一段有效旁白仍必须先朗读原题或复述问题，然后只点破关键卡点，并配合白板动作展示关键关系。"
+      : "讲解模式：详细讲解。开场第一段有效旁白必须先朗读原题或复述问题，再分析题干，然后完整讲解。",
     params.subject ? `学科/类型：${params.subject}` : "",
     `题目内容：\n${params.problemText}`,
     params.diagramDescription ? `图片/图示内容：\n${params.diagramDescription}` : "",
@@ -174,6 +363,336 @@ export async function registerRoutes(
   // prefix all routes with /api
   // use storage to perform CRUD operations on the storage interface
   // e.g. app.get("/api/items", async (_req, res) => { ... })
+  app.get("/api/lectures", async (_req, res, next) => {
+    try {
+      const lectures = await storage.listWhiteboardLectures();
+      const groups = await storage.listWhiteboardGroups();
+      return res.json({
+        groups,
+        lectures: lectures.map((lecture) => ({
+          id: lecture.id,
+          groupId: lecture.groupId,
+          title: lecture.title,
+          ttsEnabled: lecture.ttsEnabled,
+          playbackSpeed: lecture.playbackSpeed,
+          shareId: lecture.shareId,
+          shareActive: lecture.shareActive,
+          createdAt: lecture.createdAt,
+          updatedAt: lecture.updatedAt,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/lecture-groups", async (req, res, next) => {
+    try {
+      const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+      if (!name) return res.status(400).json({ message: "分组名称不能为空。" });
+      const parentId =
+        typeof req.body?.parentId === "string" && req.body.parentId
+          ? req.body.parentId
+          : null;
+      if (parentId && !GROUP_ID_PATTERN.test(parentId)) {
+        return res.status(400).json({ message: "父分组无效。" });
+      }
+      if (parentId) {
+        const groups = await storage.listWhiteboardGroups();
+        if (!groups.some((group) => group.id === parentId)) {
+          return res.status(404).json({ message: "父分组不存在。" });
+        }
+      }
+      const id = createGroupId();
+      await storage.createWhiteboardGroup({
+        id,
+        parentId,
+        name: name.slice(0, 80),
+      });
+      return res.status(201).json({ id, parentId, name: name.slice(0, 80) });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.delete("/api/lecture-groups/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!GROUP_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "分组不存在。" });
+      }
+      const deleted = await storage.deleteWhiteboardGroup(id);
+      if (!deleted) return res.status(404).json({ message: "分组不存在。" });
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/lecture-groups/:id/share", async (req, res, next) => {
+    try {
+      const groupId = req.params.id;
+      if (!GROUP_ID_PATTERN.test(groupId)) {
+        return res.status(404).json({ message: "分组不存在。" });
+      }
+      const groups = await storage.listWhiteboardGroups();
+      const group = groups.find((item) => item.id === groupId);
+      if (!group) return res.status(404).json({ message: "分组不存在。" });
+      if (group.shareId && group.shareActive) {
+        return res.json({ id: group.shareId });
+      }
+      const shareId = createGroupShareId();
+      await storage.createWhiteboardGroupShare({ id: shareId, groupId });
+      await storage.setWhiteboardGroupShare({ groupId, shareId, active: true });
+      return res.status(201).json({ id: shareId });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.delete("/api/lecture-groups/:id/share", async (req, res, next) => {
+    try {
+      const groupId = req.params.id;
+      if (!GROUP_ID_PATTERN.test(groupId)) {
+        return res.status(404).json({ message: "分组不存在。" });
+      }
+      const groups = await storage.listWhiteboardGroups();
+      const group = groups.find((item) => item.id === groupId);
+      if (!group) return res.status(404).json({ message: "分组不存在。" });
+      if (!group.shareId) return res.json({ ok: true });
+      await storage.stopWhiteboardGroupShare(group.shareId);
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get("/api/group-shares/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!GROUP_SHARE_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "分组分享不存在。" });
+      }
+      const share = await storage.getWhiteboardGroupShare(id);
+      if (!share || !share.active) {
+        return res.status(404).json({ message: "分组分享不存在。" });
+      }
+      const groups = await storage.listWhiteboardGroups();
+      const rootGroup = groups.find((group) => group.id === share.groupId);
+      if (!rootGroup) return res.status(404).json({ message: "分组不存在。" });
+      const groupIds = getDescendantGroupIds(groups, share.groupId);
+      const lectures = (await storage.listWhiteboardLectures()).filter(
+        (lecture) => lecture.groupId && groupIds.has(lecture.groupId),
+      );
+      return res.json({
+        id,
+        rootGroup,
+        groups: groups.filter((group) => groupIds.has(group.id)),
+        lectures: lectures.map((lecture) => ({
+          id: lecture.id,
+          groupId: lecture.groupId,
+          title: lecture.title,
+          scriptText: lecture.scriptText,
+          ttsEnabled: lecture.ttsEnabled,
+          playbackSpeed: lecture.playbackSpeed,
+          updatedAt: lecture.updatedAt,
+        })),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/lectures", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "请提供要保存的脚本。" });
+      }
+      if (scriptText.length > MAX_SHARE_SCRIPT_TEXT_LENGTH) {
+        return res.status(413).json({ message: "脚本太大，暂时无法保存。" });
+      }
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法保存。",
+          report: preflight.report,
+        });
+      }
+      const title =
+        typeof req.body?.title === "string" && req.body.title.trim()
+          ? req.body.title.trim().slice(0, 80)
+          : inferLectureTitle(preflight.script);
+      const id = createLectureId();
+      const groupId =
+        typeof req.body?.groupId === "string" && req.body.groupId
+          ? req.body.groupId
+          : null;
+      if (groupId && !GROUP_ID_PATTERN.test(groupId)) {
+        return res.status(400).json({ message: "分组无效。" });
+      }
+      const ttsEnabled =
+        typeof req.body?.ttsEnabled === "boolean" ? req.body.ttsEnabled : true;
+      const playbackSpeed = clampRate(req.body?.playbackSpeed);
+      await storage.createWhiteboardLecture({
+        id,
+        groupId,
+        title,
+        scriptText: JSON.stringify(preflight.script),
+        ttsEnabled,
+        playbackSpeed,
+      });
+      return res.status(201).json({ id, title });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get("/api/lectures/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!LECTURE_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "讲解不存在。" });
+      }
+      const lecture = await storage.getWhiteboardLecture(id);
+      if (!lecture) return res.status(404).json({ message: "讲解不存在。" });
+      return res.json(lecture);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.patch("/api/lectures/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!LECTURE_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "讲解不存在。" });
+      }
+      const groupId =
+        typeof req.body?.groupId === "string" && req.body.groupId
+          ? req.body.groupId
+          : null;
+      if (groupId && !GROUP_ID_PATTERN.test(groupId)) {
+        return res.status(400).json({ message: "分组无效。" });
+      }
+      const moved = await storage.moveWhiteboardLecture({ id, groupId });
+      if (!moved) return res.status(404).json({ message: "讲解不存在。" });
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.delete("/api/lectures/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!LECTURE_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "讲解不存在。" });
+      }
+      const deleted = await storage.deleteWhiteboardLecture(id);
+      if (!deleted) return res.status(404).json({ message: "讲解不存在。" });
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/lectures/:id/share", async (req, res, next) => {
+    try {
+      const lectureId = req.params.id;
+      if (!LECTURE_ID_PATTERN.test(lectureId)) {
+        return res.status(404).json({ message: "讲解不存在。" });
+      }
+      const lecture = await storage.getWhiteboardLecture(lectureId);
+      if (!lecture) return res.status(404).json({ message: "讲解不存在。" });
+      if (lecture.shareId && lecture.shareActive) {
+        return res.json({ id: lecture.shareId });
+      }
+      const shareId = createShareId();
+      await storage.createWhiteboardShare({
+        id: shareId,
+        scriptText: lecture.scriptText,
+        ttsEnabled: lecture.ttsEnabled,
+        playbackSpeed: lecture.playbackSpeed,
+        lectureId,
+      });
+      await storage.setWhiteboardLectureShare({
+        lectureId,
+        shareId,
+        active: true,
+      });
+      return res.status(201).json({ id: shareId });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.delete("/api/lectures/:id/share", async (req, res, next) => {
+    try {
+      const lectureId = req.params.id;
+      if (!LECTURE_ID_PATTERN.test(lectureId)) {
+        return res.status(404).json({ message: "讲解不存在。" });
+      }
+      const lecture = await storage.getWhiteboardLecture(lectureId);
+      if (!lecture) return res.status(404).json({ message: "讲解不存在。" });
+      if (!lecture.shareId) return res.json({ ok: true });
+      await storage.stopWhiteboardShare(lecture.shareId);
+      return res.json({ ok: true });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/shares", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "请提供要分享的脚本。" });
+      }
+      if (scriptText.length > MAX_SHARE_SCRIPT_TEXT_LENGTH) {
+        return res.status(413).json({ message: "脚本太大，暂时无法分享。" });
+      }
+
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法分享。",
+          report: preflight.report,
+        });
+      }
+
+      const id = createShareId();
+      const ttsEnabled =
+        typeof req.body?.ttsEnabled === "boolean" ? req.body.ttsEnabled : true;
+      const playbackSpeed = clampRate(req.body?.playbackSpeed);
+      await storage.createWhiteboardShare({
+        id,
+        scriptText: JSON.stringify(preflight.script),
+        ttsEnabled,
+        playbackSpeed,
+      });
+      return res.status(201).json({ id });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get("/api/shares/:id", async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!SHARE_ID_PATTERN.test(id)) {
+        return res.status(404).json({ message: "分享不存在。" });
+      }
+      const share = await storage.getWhiteboardShare(id);
+      if (!share || !share.active) {
+        return res.status(404).json({ message: "分享不存在。" });
+      }
+      return res.json(share);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.post("/api/tts", async (req, res, next) => {
     try {
       const key = process.env.AZURE_SPEECH_KEY;
@@ -279,6 +798,35 @@ export async function registerRoutes(
     },
   );
 
+  app.post("/api/video/render-jobs/:id/webm-segments", (req, res) => {
+    const rawSegments = Array.isArray(req.body?.segments) ? req.body.segments : null;
+    if (!rawSegments || rawSegments.length === 0) {
+      failVideoRenderJob(req.params.id, new Error("浏览器录制分段结果为空。"));
+      return res.status(400).json({ message: "视频分段数据不能为空。" });
+    }
+
+    let totalBytes = 0;
+    const buffers: Buffer[] = [];
+    for (const rawSegment of rawSegments) {
+      if (typeof rawSegment !== "string" || rawSegment.length === 0) {
+        failVideoRenderJob(req.params.id, new Error("浏览器录制分段格式无效。"));
+        return res.status(400).json({ message: "视频分段格式无效。" });
+      }
+      const buffer = Buffer.from(rawSegment, "base64");
+      totalBytes += buffer.length;
+      if (totalBytes > MAX_VIDEO_UPLOAD_BYTES) {
+        failVideoRenderJob(req.params.id, new Error("浏览器录制分段过大。"));
+        return res.status(413).json({ message: "视频分段数据过大。" });
+      }
+      buffers.push(buffer);
+    }
+
+    if (!completeVideoRenderJobSegments(req.params.id, buffers)) {
+      return res.status(404).json({ message: "视频录制任务不存在或已过期。" });
+    }
+    return res.json({ ok: true, segments: buffers.length, size: totalBytes });
+  });
+
   app.post("/api/video/render", async (req, res, next) => {
     const controller = createRequestAbortController(req, res);
     const job = createVideoRenderJob();
@@ -328,6 +876,24 @@ export async function registerRoutes(
         scriptText = generated.scriptText;
       }
 
+      const renderPreflight = preflightScriptText(scriptText);
+      if (!renderPreflight.report.ok || !renderPreflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，请先修正脚本后再生成视频。",
+          report: renderPreflight.report,
+        });
+      }
+      if (ttsEnabled) {
+        const durationMismatches = findTtsDurationMismatches(renderPreflight.script);
+        if (durationMismatches.length > 0) {
+          return res.status(400).json({
+            message:
+              "脚本中部分命令的 duration 与旁白预计时长差距过大。请修改脚本 duration 或拆分旁白后重试。",
+            issues: durationMismatches,
+          });
+        }
+      }
+
       const baseUrl = getLocalRenderBaseUrl();
       await renderScriptToWebmInHeadlessBrowser({
         baseUrl,
@@ -336,8 +902,11 @@ export async function registerRoutes(
         ttsEnabled,
         playbackSpeed,
       });
-      const webm = await job.promise;
-      const mp4 = await convertWebmBufferToMp4(webm);
+      const rendered = await job.promise;
+      const mp4 =
+        rendered.kind === "webm"
+          ? await convertWebmBufferToMp4(rendered.buffer)
+          : await convertWebmSegmentsToMp4(rendered.buffers);
       res.setHeader("Content-Type", "video/mp4");
       res.setHeader("Content-Disposition", 'attachment; filename="whiteboard-lecture.mp4"');
       res.setHeader("Cache-Control", "no-store");
@@ -379,6 +948,31 @@ export async function registerRoutes(
     } catch (error) {
       if (controller.signal.aborted && !res.headersSent) {
         return res.status(499).json({ message: "生成讲解已取消。" });
+      }
+      return next(error);
+    }
+  });
+
+  app.post("/api/ai-script/knowledge-summary", async (req, res, next) => {
+    const controller = createRequestAbortController(req, res);
+    try {
+      const scriptText =
+        typeof req.body?.scriptText === "string" ? req.body.scriptText : "";
+      const originalPrompt =
+        typeof req.body?.originalPrompt === "string" ? req.body.originalPrompt : "";
+      const mode = parseExplanationMode(req.body?.mode);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "scriptText 不能为空。" });
+      }
+      if (originalPrompt.length > 8000) {
+        return res.status(400).json({ message: "originalPrompt 不能超过 8000 个字符。" });
+      }
+      return res.json(
+        await summarizeScriptKnowledge(scriptText, originalPrompt, mode, controller.signal),
+      );
+    } catch (error) {
+      if (controller.signal.aborted && !res.headersSent) {
+        return res.status(499).json({ message: "知识点整理已取消。" });
       }
       return next(error);
     }

@@ -167,6 +167,7 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 适合用户第一次学习或需要完整讲解。生成策略：
 
 - 先读题。
+- 第一段有效旁白必须朗读原题，或在题干很长/识别不完整时先复述问题。
 - 再分析题干、已知条件、图示信息和要求。
 - 分步骤推导或解释。
 - 最后总结答案和易错点。
@@ -179,6 +180,7 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 适合用户已经读过题、思考过一段时间，只需要一个提示。生成策略：
 
 - 不做完整铺开。
+- 开场第一段有效旁白仍必须先朗读原题或复述问题，控制在一句话内。
 - 用一两句话点破最关键、最容易卡住的地方。
 - 仍然必须配合白板动作，例如写关键关系、画关键图示局部、用激光笔指示卡点。
 - 输出视频通常更短。
@@ -283,12 +285,24 @@ CHROME_EXECUTABLE_PATH=/path/to/chrome-or-chromium
 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 ```
 
-生产环境必须确保 Chrome/Chromium 和 `ffmpeg` 可用。Railway 当前使用 Railpack 构建时，需要配置运行时 apt 包：
+生产环境必须确保 Chrome/Chromium、`ffmpeg` 和中文字体可用。Railway 当前使用 Railpack 构建时，仓库根目录的 `railpack.json` 会在运行时镜像安装：
+
+```json
+{
+  "deploy": {
+    "aptPackages": ["chromium", "ffmpeg", "fonts-noto-cjk"]
+  }
+}
+```
+
+如果需要在 Railway Variables 中覆盖，也应包含 CJK 字体包：
 
 ```env
-RAILPACK_DEPLOY_APT_PACKAGES=chromium ffmpeg
+RAILPACK_DEPLOY_APT_PACKAGES=chromium ffmpeg fonts-noto-cjk
 CHROME_EXECUTABLE_PATH=/usr/bin/chromium
 ```
+
+如果部署镜像源里 `fonts-noto-cjk` 包名不可用，可尝试把字体包改为 `fonts-wqy-zenhei fonts-wqy-microhei`。缺少 CJK 字体时，中文 `write_text` 在 headless Chromium 录制出的 MP4 中会显示为方框。
 
 ## 内部流程
 
@@ -296,12 +310,17 @@ CHROME_EXECUTABLE_PATH=/usr/bin/chromium
 
 1. 如果请求提供 `script` 或 `scriptText`，直接校验并使用脚本。
 2. 如果请求提供 `text` / `imageDataUrl`，先识别图片，再生成白板脚本。
-3. 后端启动 headless Chrome 打开当前 Web 应用，并使用生产环境可访问的服务地址完成录制结果上传。
-4. 页面调用 `window.aiWhiteboardRecordScript` 重新播放脚本并录制 WebM。
-5. 如果启用 TTS，页面会逐条生成旁白语音；遇到临时中断会按退避策略自动重试单条旁白。
-6. 页面把 WebM 上传回内部接口 `/api/video/render-jobs/:id/webm`。
-7. 后端用 `ffmpeg` 转成 MP4。
-8. 后端把 MP4 作为响应体返回。
+3. 后端执行视频渲染预检：
+   - 如果脚本 schema 或常规预检不通过，直接返回 `400` 和预检报告。
+   - 如果启用 TTS，且某条命令的 `duration` 与旁白预计时长差距明显过大，直接返回 `400`，要求调用方修改脚本 `duration` 或拆分旁白。
+4. 后端启动 headless Chrome 打开当前 Web 应用，并使用生产环境可访问的服务地址完成录制结果上传。
+5. 页面调用 `window.aiWhiteboardRecordScript` 重新播放脚本并录制 WebM。
+6. 如果启用 TTS，页面会逐条生成旁白语音；遇到临时中断会按退避策略自动重试单条旁白。
+   - 录制前会解码已生成的 TTS 音频，并用每条旁白的实际音频时长覆盖对应命令的录制用 `duration`。
+   - 录制时会保留一条静音音频底流，避免旁白提前结束后 MP4 出现音频轨短于视频轨的情况。
+7. 页面把 WebM 上传回内部接口 `/api/video/render-jobs/:id/webm`。
+8. 后端用 `ffmpeg` 转成 MP4。
+9. 后端把 MP4 作为响应体返回。
 
 `/api/video/render-jobs/:id/webm` 是服务端和 headless 浏览器之间使用的内部上传接口，外部调用方不应直接调用。
 

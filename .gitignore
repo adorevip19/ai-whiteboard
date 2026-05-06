@@ -4,6 +4,9 @@ dist/
 *.log
 .env
 .env.local
+data.db
+data.db-shm
+data.db-wal
 .vscode/
 .idea/
 .claude/

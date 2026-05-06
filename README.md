@@ -51,6 +51,8 @@ Railway 会执行：
    - 静态托管 `dist/public`
    - 未命中的前端路由回退到 `index.html`
 
+根目录的 `railpack.json` 会让 Railpack 在运行时镜像安装 `chromium`、`ffmpeg` 和 `fonts-noto-cjk`，确保服务端 MP4 录制链路和中文白板字体 fallback 可用。
+
 部署步骤：
 
 1. Railway → **New Project** → **Deploy from GitHub repo**

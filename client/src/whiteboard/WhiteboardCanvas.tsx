@@ -5,15 +5,45 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AnnotationElement,
   CanvasConfig,
+  LayoutPageTheme,
   RenderedElement,
 } from "./commandTypes";
+import {
+  WHITEBOARD_MONO_FONT_FAMILY,
+  WHITEBOARD_TEXT_FONT_FAMILY,
+} from "./fonts";
 import { MathRenderer } from "./MathRenderer";
+import { cn } from "@/lib/utils";
 
 interface Props {
   canvas: CanvasConfig;
   elements: RenderedElement[];
   annotations: AnnotationElement[];
   allowUpscale?: boolean;
+  fullBleed?: boolean;
+}
+
+function takeVisibleLines(lines: string[], visibleChars: number) {
+  let remaining = visibleChars;
+  return lines.map((line) => {
+    const chars = Array.from(line);
+    const count = Math.max(0, Math.min(chars.length, remaining));
+    remaining -= count;
+    return chars.slice(0, count).join("");
+  });
+}
+
+function layoutTheme(theme: LayoutPageTheme) {
+  if (theme === "warm") {
+    return { accent: "#d97706", fill: "#fffbeb", stroke: "#f3d08a", title: "#7c2d12" };
+  }
+  if (theme === "cool") {
+    return { accent: "#2563eb", fill: "#eff6ff", stroke: "#bfdbfe", title: "#1e3a8a" };
+  }
+  if (theme === "green") {
+    return { accent: "#16a34a", fill: "#f0fdf4", stroke: "#bbf7d0", title: "#14532d" };
+  }
+  return { accent: "#334155", fill: "#f8fafc", stroke: "#d8e0ea", title: "#111827" };
 }
 
 export function WhiteboardCanvas({
@@ -21,6 +51,7 @@ export function WhiteboardCanvas({
   elements,
   annotations,
   allowUpscale = false,
+  fullBleed = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
@@ -33,9 +64,9 @@ export function WhiteboardCanvas({
 
     const compute = () => {
       const rect = el.getBoundingClientRect();
-      // Leave a little breathing room so the border doesn't get clipped.
-      const availW = Math.max(rect.width - 8, 100);
-      const availH = Math.max(rect.height - 8, 100);
+      const inset = fullBleed ? 0 : 8;
+      const availW = Math.max(rect.width - inset, 100);
+      const availH = Math.max(rect.height - inset, 100);
       const maxScale = allowUpscale ? Number.POSITIVE_INFINITY : 1;
       const s = Math.min(availW / canvas.width, availH / canvas.height, maxScale);
       setScale(s);
@@ -45,7 +76,7 @@ export function WhiteboardCanvas({
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [allowUpscale, canvas.width, canvas.height]);
+  }, [allowUpscale, canvas.width, canvas.height, fullBleed]);
 
   const displayW = canvas.width * scale;
   const displayH = canvas.height * scale;
@@ -57,19 +88,137 @@ export function WhiteboardCanvas({
   return (
     <div
       ref={containerRef}
-      className="flex h-full w-full items-center justify-center overflow-hidden bg-muted/30 p-2"
+      className={cn(
+        "flex h-full w-full items-center justify-center overflow-hidden",
+        fullBleed ? "bg-background p-0" : "bg-transparent p-0",
+      )}
       data-testid="whiteboard-container"
     >
       <svg
         width={displayW}
         height={displayH}
         viewBox={`0 0 ${canvas.width} ${canvas.height}`}
-        className="rounded-md border shadow-sm"
+        className={cn(fullBleed ? "" : "rounded-lg border border-border/70 shadow-xl")}
         style={{ background: canvas.background }}
         data-testid="whiteboard-svg"
       >
         {elements.map((el) => {
           const transform = elementTransform(el);
+          if (el.kind === "layout") {
+            const theme = layoutTheme(el.theme);
+            return (
+              <g key={el.id} transform={transform} opacity={el.progress} data-testid={`layout-${el.id}`}>
+                <rect x={0} y={0} width={canvas.width} height={canvas.height} fill="#ffffff" />
+                <rect x={42} y={38} width={8} height={52} rx={4} fill={theme.accent} />
+                {el.title ? (
+                  <text
+                    x={70}
+                    y={72}
+                    fill={theme.title}
+                    fontSize={38}
+                    fontWeight={700}
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
+                  >
+                    {el.title}
+                  </text>
+                ) : null}
+                {el.subtitle ? (
+                  <text
+                    x={72}
+                    y={108}
+                    fill="#64748b"
+                    fontSize={20}
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
+                  >
+                    {el.subtitle}
+                  </text>
+                ) : null}
+                {el.slots.map((slot) => (
+                  <g key={`${el.id}-${slot.id}`}>
+                    <rect
+                      x={slot.x}
+                      y={slot.y}
+                      width={slot.width}
+                      height={slot.height}
+                      rx={8}
+                      fill={theme.fill}
+                      stroke={theme.stroke}
+                      strokeWidth={1.5}
+                    />
+                  </g>
+                ))}
+              </g>
+            );
+          }
+          if (el.kind === "paragraph") {
+            const clipId = `clip-paragraph-${el.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+            const visibleLines = takeVisibleLines(el.lines, el.visibleChars);
+            const maxLines = Math.max(1, Math.floor((el.height - el.padding * 2) / el.lineGap));
+            return (
+              <g key={el.id} transform={transform} data-testid={`paragraph-${el.id}`}>
+                <defs>
+                  <clipPath id={clipId}>
+                    <rect x={el.x} y={el.y} width={el.width} height={el.height} rx={8} />
+                  </clipPath>
+                </defs>
+                <g clipPath={`url(#${clipId})`}>
+                  {visibleLines.slice(0, maxLines).map((line, index) => (
+                    <text
+                      key={`${el.id}-${index}`}
+                      x={el.x + el.padding}
+                      y={el.y + el.padding + el.fontSize + index * el.lineGap}
+                      fill={el.color}
+                      fontSize={el.fontSize}
+                      fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
+                      dominantBaseline="alphabetic"
+                    >
+                      {line}
+                    </text>
+                  ))}
+                </g>
+              </g>
+            );
+          }
+          if (el.kind === "revision_compare") {
+            const visibleBefore = takeVisibleLines(el.beforeLines, el.visibleBeforeChars);
+            const visibleAfter = takeVisibleLines(el.afterLines, el.visibleAfterChars);
+            const visibleNote = takeVisibleLines(el.noteLines, el.visibleNoteChars);
+            const gap = 26;
+            const noteH = el.note ? Math.min(92, el.height * 0.24) : 0;
+            const bodyH = el.height - noteH - (el.note ? 18 : 0);
+            const cardW = (el.width - gap) / 2;
+            const leftX = el.x;
+            const rightX = el.x + cardW + gap;
+            const noteY = el.y + bodyH + 18;
+            const arrowY = el.y + bodyH / 2;
+            const lineGap = el.fontSize * 1.55;
+            const maxCardLines = Math.max(1, Math.floor((bodyH - 72) / lineGap));
+            return (
+              <g key={el.id} transform={transform} opacity={el.progress} data-testid={`revision-compare-${el.id}`}>
+                <rect x={leftX} y={el.y} width={cardW} height={bodyH} rx={8} fill="#fff7ed" stroke="#fed7aa" strokeWidth={1.5} />
+                <rect x={rightX} y={el.y} width={cardW} height={bodyH} rx={8} fill="#f0fdf4" stroke="#bbf7d0" strokeWidth={1.5} />
+                <text x={leftX + 18} y={el.y + 34} fill="#c2410c" fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.beforeTitle}</text>
+                <text x={rightX + 18} y={el.y + 34} fill="#15803d" fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.afterTitle}</text>
+                <line x1={leftX + cardW + 8} y1={arrowY} x2={rightX - 8} y2={arrowY} stroke="#64748b" strokeWidth={2.5} strokeLinecap="round" />
+                <polyline points={`${rightX - 18},${arrowY - 8} ${rightX - 8},${arrowY} ${rightX - 18},${arrowY + 8}`} fill="none" stroke="#64748b" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+                {visibleBefore.slice(0, maxCardLines).map((line, index) => (
+                  <text key={`${el.id}-before-${index}`} x={leftX + 22} y={el.y + 78 + index * lineGap} fill="#111827" fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                ))}
+                {visibleAfter.slice(0, maxCardLines).map((line, index) => (
+                  <text key={`${el.id}-after-${index}`} x={rightX + 22} y={el.y + 78 + index * lineGap} fill="#111827" fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                ))}
+                {el.note ? (
+                  <g>
+                    <rect x={el.x} y={noteY} width={el.width} height={noteH} rx={8} fill="#f8fafc" stroke="#d8e0ea" strokeWidth={1.5} />
+                    <text x={el.x + 18} y={noteY + 28} fill="#334155" fontSize={16} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>点评</text>
+                    {visibleNote.slice(0, 2).map((line, index) => (
+                      <text key={`${el.id}-note-${index}`} x={el.x + 72} y={noteY + 30 + index * 26} fill="#334155" fontSize={Math.max(20, el.fontSize - 4)} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                    ))}
+                  </g>
+                ) : null}
+              </g>
+            );
+          }
           if (el.kind === "math") {
             return (
               <foreignObject
@@ -142,7 +291,7 @@ export function WhiteboardCanvas({
             const textProps = {
               fill: el.color,
               fontSize: el.fontSize,
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontFamily: WHITEBOARD_MONO_FONT_FAMILY,
               dominantBaseline: "alphabetic",
             } as const;
 
@@ -180,7 +329,7 @@ export function WhiteboardCanvas({
                     fontSize={segment.fontSize}
                     fill={segment.color}
                     fontWeight={segment.fontWeight}
-                    fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
                     dominantBaseline="alphabetic"
                     data-testid={
                       segment.id
@@ -432,7 +581,7 @@ export function WhiteboardCanvas({
                         textAnchor="middle"
                         fontSize={el.fontSize}
                         fill={el.labelColor}
-                        fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                        fontFamily={WHITEBOARD_MONO_FONT_FAMILY}
                       >
                         {tick}
                       </text>
@@ -449,7 +598,7 @@ export function WhiteboardCanvas({
                           textAnchor="end"
                           fontSize={el.fontSize}
                           fill={el.labelColor}
-                          fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                          fontFamily={WHITEBOARD_MONO_FONT_FAMILY}
                         >
                           {tick}
                         </text>
@@ -509,7 +658,7 @@ export function WhiteboardCanvas({
                     y={el.canvasY - el.radius - 6}
                     fontSize={el.fontSize}
                     fill={el.color}
-                    fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
                   >
                     {el.label}
                   </text>
@@ -550,7 +699,7 @@ export function WhiteboardCanvas({
                     fontSize={el.fontSize}
                     fill={el.color}
                     fontWeight={700}
-                    fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
                   >
                     {el.label}
                   </text>
@@ -595,7 +744,7 @@ export function WhiteboardCanvas({
               fill={el.color}
               transform={transform}
               fontWeight={el.fontWeight}
-              fontFamily="'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif"
+              fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
               dominantBaseline="alphabetic"
               data-testid={`text-${el.id}`}
             >

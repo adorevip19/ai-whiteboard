@@ -6,11 +6,15 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import WhiteboardPage from "@/pages/whiteboard";
+import SharedPlayerPage from "@/pages/shared-player";
+import GroupSharedPlayerPage from "@/pages/group-shared-player";
 
 function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={WhiteboardPage} />
+      <Route path="/share/:id" component={SharedPlayerPage} />
+      <Route path="/group-share/:id" component={GroupSharedPlayerPage} />
       <Route component={NotFound} />
     </Switch>
   );

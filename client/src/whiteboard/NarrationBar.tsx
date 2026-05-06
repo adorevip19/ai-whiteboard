@@ -3,6 +3,7 @@
 // with a typewriter effect, similar to a teacher speaking while drawing.
 import { useEffect, useRef, useState } from "react";
 import { Mic } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Props {
   /** Full narration text for the current step. null/empty hides the bar. */
@@ -14,9 +15,10 @@ interface Props {
    * for Latin scripts).
    */
   charsPerSecond?: number;
+  overlay?: boolean;
 }
 
-export function NarrationBar({ text, charsPerSecond = 9 }: Props) {
+export function NarrationBar({ text, charsPerSecond = 9, overlay = false }: Props) {
   const [visible, setVisible] = useState("");
   const rafRef = useRef<number | null>(null);
 
@@ -66,13 +68,16 @@ export function NarrationBar({ text, charsPerSecond = 9 }: Props) {
   if (!text) {
     return (
       <div
-        className="flex min-h-[64px] items-center gap-3 border-t bg-muted/30 px-6 py-3"
+        className={cn(
+          "flex min-h-[64px] items-center gap-3 border-t bg-muted/30 px-6 py-3",
+          overlay && "pointer-events-auto min-h-0 rounded-md border bg-background/85 px-3 py-2 shadow-sm backdrop-blur",
+        )}
         data-testid="narration-bar-empty"
       >
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground/60">
+        <div className={cn("flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground/60", overlay && "hidden")}>
           <Mic className="h-4 w-4" />
         </div>
-        <span className="text-sm italic text-muted-foreground/60">
+        <span className={cn("text-sm italic text-muted-foreground/60", overlay && "text-xs")}>
           旁白区域 · 运行脚本后老师会开始讲解
         </span>
       </div>
@@ -81,14 +86,17 @@ export function NarrationBar({ text, charsPerSecond = 9 }: Props) {
 
   return (
     <div
-      className="flex min-h-[64px] items-start gap-3 border-t bg-foreground/[0.04] px-6 py-3"
+      className={cn(
+        "flex min-h-[64px] items-start gap-3 border-t bg-foreground/[0.04] px-6 py-3",
+        overlay && "pointer-events-auto min-h-0 rounded-md border bg-background/85 px-3 py-2 shadow-sm backdrop-blur",
+      )}
       data-testid="narration-bar"
     >
-      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+      <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary", overlay && "hidden")}>
         <Mic className="h-4 w-4" />
       </div>
       <p
-        className="text-[15px] leading-relaxed text-foreground"
+        className={cn("text-[15px] leading-relaxed text-foreground", overlay && "line-clamp-2 text-xs leading-snug sm:text-sm")}
         data-testid="text-narration"
       >
         {visible}

@@ -101,6 +101,64 @@ export interface WriteDivisionLayoutCommand {
   narration?: string;
 }
 
+export type LayoutPageVariant = "title_content" | "two_column" | "revision" | "three_panel";
+export type LayoutPageTheme = "default" | "warm" | "cool" | "green";
+
+export interface LayoutSlot {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label?: string;
+}
+
+export interface LayoutPageCommand {
+  type: "layout_page";
+  id: string;
+  variant: LayoutPageVariant;
+  title?: string;
+  subtitle?: string;
+  theme?: LayoutPageTheme;
+  duration: number;
+  narration?: string;
+}
+
+export interface WriteParagraphCommand {
+  type: "write_paragraph";
+  id: string;
+  text: string;
+  slotId?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  fontSize: number;
+  color?: string;
+  lineGap?: number;
+  padding?: number;
+  duration: number;
+  narration?: string;
+}
+
+export interface RevisionCompareCommand {
+  type: "revision_compare";
+  id: string;
+  before: string;
+  after: string;
+  slotId?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  beforeTitle?: string;
+  afterTitle?: string;
+  note?: string;
+  fontSize?: number;
+  duration: number;
+  narration?: string;
+}
+
 export interface DrawLineCommand {
   type: "draw_line";
   id: string;
@@ -558,6 +616,9 @@ export type WhiteboardCommand =
   | WriteMathCommand
   | WriteMathStepsCommand
   | WriteDivisionLayoutCommand
+  | LayoutPageCommand
+  | WriteParagraphCommand
+  | RevisionCompareCommand
   | DrawLineCommand
   | DrawArrowCommand
   | DrawPathCommand
@@ -630,6 +691,52 @@ export interface RenderedTextSegment {
 
 // Rendered element state (snapshot kept on the canvas)
 export type RenderedElement = (
+  | {
+      kind: "layout";
+      id: string;
+      variant: LayoutPageVariant;
+      title?: string;
+      subtitle?: string;
+      theme: LayoutPageTheme;
+      slots: LayoutSlot[];
+      progress: number;
+      bbox: ElementBBox;
+    }
+  | {
+      kind: "paragraph";
+      id: string;
+      lines: string[];
+      visibleChars: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      fontSize: number;
+      lineGap: number;
+      color: string;
+      padding: number;
+      bbox: ElementBBox;
+    }
+  | {
+      kind: "revision_compare";
+      id: string;
+      beforeLines: string[];
+      afterLines: string[];
+      noteLines: string[];
+      visibleBeforeChars: number;
+      visibleAfterChars: number;
+      visibleNoteChars: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      fontSize: number;
+      beforeTitle: string;
+      afterTitle: string;
+      note?: string;
+      progress: number;
+      bbox: ElementBBox;
+    }
   | {
       kind: "text";
       id: string;
@@ -965,19 +1072,8 @@ export function validateScript(raw: unknown): {
         };
       }
     }
-    if (cmd.type === "laser_pointer") {
-      const points = [
-        [cmd.x, cmd.y],
-        ...(cmd.to ? [[cmd.to.x, cmd.to.y] as [number, number]] : []),
-        ...(cmd.path ?? []),
-      ] as [number, number][];
-      if (points.some(([x, y]) => x < 0 || x > canvas.width || y < 0 || y > canvas.height)) {
-        return {
-          ok: false,
-          error: `${where} (laser_pointer) 坐标超出 canvas 范围。`,
-        };
-      }
-    }
+    // laser_pointer coordinates are checked by server-side preflight instead of
+    // schema validation so generated scripts can enter the automatic repair loop.
     if (cmd.type === "switch_page" && pages && !pages.some((page) => page.id === cmd.pageId)) {
       return {
         ok: false,
@@ -1011,6 +1107,14 @@ function validateCommand(
   if (typeof type !== "string") {
     return { ok: false, error: `${where} 缺少 type 字段。` };
   }
+
+  const hasRectFields =
+    typeof o.x === "number" &&
+    typeof o.y === "number" &&
+    typeof o.width === "number" &&
+    typeof o.height === "number" &&
+    o.width > 0 &&
+    o.height > 0;
 
   const readPoint = (
     value: unknown,
@@ -1263,6 +1367,136 @@ function validateCommand(
         y: o.y,
         fontSize: o.fontSize,
         color: typeof o.color === "string" ? o.color : "#111111",
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "layout_page") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (layout_page) 缺少 id。` };
+    if (
+      o.variant !== "title_content" &&
+      o.variant !== "two_column" &&
+      o.variant !== "revision" &&
+      o.variant !== "three_panel"
+    ) {
+      return {
+        ok: false,
+        error: `${where} (layout_page) variant 必须是 title_content/two_column/revision/three_panel。`,
+      };
+    }
+    if (o.title !== undefined && typeof o.title !== "string")
+      return { ok: false, error: `${where} (layout_page) title 必须是字符串。` };
+    if (o.subtitle !== undefined && typeof o.subtitle !== "string")
+      return { ok: false, error: `${where} (layout_page) subtitle 必须是字符串。` };
+    const theme =
+      o.theme === "default" ||
+      o.theme === "warm" ||
+      o.theme === "cool" ||
+      o.theme === "green"
+        ? o.theme
+        : "default";
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (layout_page) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "layout_page",
+        id: o.id,
+        variant: o.variant,
+        title: typeof o.title === "string" ? o.title : undefined,
+        subtitle: typeof o.subtitle === "string" ? o.subtitle : undefined,
+        theme,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "write_paragraph") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (write_paragraph) 缺少 id。` };
+    if (typeof o.text !== "string")
+      return { ok: false, error: `${where} (write_paragraph) 缺少 text。` };
+    if (o.slotId !== undefined && typeof o.slotId !== "string")
+      return { ok: false, error: `${where} (write_paragraph) slotId 必须是字符串。` };
+    if (o.slotId === undefined && !hasRectFields) {
+      return {
+        ok: false,
+        error: `${where} (write_paragraph) 必须提供 slotId，或提供有效的 x/y/width/height。`,
+      };
+    }
+    if (typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (write_paragraph) 缺少 fontSize。` };
+    if (o.lineGap !== undefined && typeof o.lineGap !== "number")
+      return { ok: false, error: `${where} (write_paragraph) lineGap 必须是数字。` };
+    if (o.padding !== undefined && typeof o.padding !== "number")
+      return { ok: false, error: `${where} (write_paragraph) padding 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (write_paragraph) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "write_paragraph",
+        id: o.id,
+        text: o.text,
+        slotId: typeof o.slotId === "string" ? o.slotId : undefined,
+        x: typeof o.x === "number" ? o.x : undefined,
+        y: typeof o.y === "number" ? o.y : undefined,
+        width: typeof o.width === "number" ? o.width : undefined,
+        height: typeof o.height === "number" ? o.height : undefined,
+        fontSize: o.fontSize,
+        color: typeof o.color === "string" ? o.color : "#111111",
+        lineGap: typeof o.lineGap === "number" ? o.lineGap : undefined,
+        padding: typeof o.padding === "number" ? o.padding : undefined,
+        duration: o.duration,
+        narration: typeof o.narration === "string" ? o.narration : undefined,
+      },
+    };
+  }
+
+  if (type === "revision_compare") {
+    if (typeof o.id !== "string")
+      return { ok: false, error: `${where} (revision_compare) 缺少 id。` };
+    if (typeof o.before !== "string" || typeof o.after !== "string") {
+      return { ok: false, error: `${where} (revision_compare) before/after 必须是字符串。` };
+    }
+    if (o.slotId !== undefined && typeof o.slotId !== "string")
+      return { ok: false, error: `${where} (revision_compare) slotId 必须是字符串。` };
+    if (o.slotId === undefined && !hasRectFields) {
+      return {
+        ok: false,
+        error: `${where} (revision_compare) 必须提供 slotId，或提供有效的 x/y/width/height。`,
+      };
+    }
+    if (o.beforeTitle !== undefined && typeof o.beforeTitle !== "string")
+      return { ok: false, error: `${where} (revision_compare) beforeTitle 必须是字符串。` };
+    if (o.afterTitle !== undefined && typeof o.afterTitle !== "string")
+      return { ok: false, error: `${where} (revision_compare) afterTitle 必须是字符串。` };
+    if (o.note !== undefined && typeof o.note !== "string")
+      return { ok: false, error: `${where} (revision_compare) note 必须是字符串。` };
+    if (o.fontSize !== undefined && typeof o.fontSize !== "number")
+      return { ok: false, error: `${where} (revision_compare) fontSize 必须是数字。` };
+    if (typeof o.duration !== "number")
+      return { ok: false, error: `${where} (revision_compare) 缺少 duration。` };
+    return {
+      ok: true,
+      command: {
+        type: "revision_compare",
+        id: o.id,
+        before: o.before,
+        after: o.after,
+        slotId: typeof o.slotId === "string" ? o.slotId : undefined,
+        x: typeof o.x === "number" ? o.x : undefined,
+        y: typeof o.y === "number" ? o.y : undefined,
+        width: typeof o.width === "number" ? o.width : undefined,
+        height: typeof o.height === "number" ? o.height : undefined,
+        beforeTitle: typeof o.beforeTitle === "string" ? o.beforeTitle : undefined,
+        afterTitle: typeof o.afterTitle === "string" ? o.afterTitle : undefined,
+        note: typeof o.note === "string" ? o.note : undefined,
+        fontSize: typeof o.fontSize === "number" ? o.fontSize : undefined,
         duration: o.duration,
         narration: typeof o.narration === "string" ? o.narration : undefined,
       },
@@ -2873,6 +3107,17 @@ export function describeCommand(cmd: WhiteboardCommand): string {
   }
   if (cmd.type === "write_division_layout") {
     return `写除法竖式 ${cmd.dividend} ÷ ${cmd.divisor}`;
+  }
+  if (cmd.type === "layout_page") {
+    return `设置版式 ${cmd.variant}`;
+  }
+  if (cmd.type === "write_paragraph") {
+    const preview =
+      cmd.text.length > 18 ? cmd.text.slice(0, 18) + "…" : cmd.text;
+    return `写段落 "${preview}"`;
+  }
+  if (cmd.type === "revision_compare") {
+    return "作文修改对比";
   }
   if (cmd.type === "draw_line") {
     return `画线 (${cmd.from[0]},${cmd.from[1]}) → (${cmd.to[0]},${cmd.to[1]})`;
