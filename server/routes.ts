@@ -89,28 +89,75 @@ function runFfmpeg(args: string[]) {
   });
 }
 
+function hasAudioStream(inputPath: string) {
+  return new Promise<boolean>((resolve, reject) => {
+    const child = spawn(
+      "ffprobe",
+      ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", inputPath],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(stdout.trim().length > 0);
+      else reject(new Error(`ffprobe 检查音频流失败（code ${code}）：${stderr || "无错误输出"}`));
+    });
+  });
+}
+
 async function convertWebmBufferToMp4(webm: Buffer) {
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ai-whiteboard-video-"));
   const inputPath = path.join(workDir, "input.webm");
   const outputPath = path.join(workDir, "whiteboard-lecture.mp4");
   try {
     await fs.writeFile(inputPath, webm);
-    await runFfmpeg([
-      "-y",
-      "-i",
-      inputPath,
-      "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      "-movflags",
-      "+faststart",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "128k",
-      outputPath,
-    ]);
+    if (await hasAudioStream(inputPath)) {
+      await runFfmpeg([
+        "-y",
+        "-i",
+        inputPath,
+        "-filter_complex",
+        "[0:v]fps=15,format=yuv420p,tpad=stop_mode=clone:stop_duration=1800[v];[0:a]aresample=async=1:first_pts=0[a]",
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-shortest",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        outputPath,
+      ]);
+    } else {
+      await runFfmpeg([
+        "-y",
+        "-i",
+        inputPath,
+        "-vf",
+        "fps=15,format=yuv420p",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ]);
+    }
     return await fs.readFile(outputPath);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
@@ -893,6 +940,7 @@ export async function registerRoutes(
           });
         }
       }
+      scriptText = JSON.stringify(renderPreflight.script);
 
       const baseUrl = getLocalRenderBaseUrl();
       await renderScriptToWebmInHeadlessBrowser({
@@ -944,7 +992,34 @@ export async function registerRoutes(
       if (prompt.length > 8000) {
         return res.status(400).json({ message: "prompt 不能超过 8000 个字符。" });
       }
-      return res.json(await generateAiScript(prompt, mode, controller.signal));
+      const sourceImageDataUrl =
+        typeof req.body?.sourceImageDataUrl === "string" ? req.body.sourceImageDataUrl.trim() : "";
+      if (sourceImageDataUrl) {
+        if (sourceImageDataUrl.length > MAX_IMAGE_DATA_URL_LENGTH) {
+          return res.status(413).json({ message: "图片太大，请上传 10MB 以内的图片。" });
+        }
+        if (!IMAGE_DATA_URL_PATTERN.test(sourceImageDataUrl)) {
+          return res.status(400).json({
+            message: "原题图片只支持 PNG、JPEG、WEBP 或 GIF 格式。",
+          });
+        }
+      }
+      const imageAnchors = Array.isArray(req.body?.imageAnchors) ? req.body.imageAnchors : undefined;
+      const sourceImageSizeRaw =
+        req.body?.sourceImageSize && typeof req.body.sourceImageSize === "object"
+          ? (req.body.sourceImageSize as Record<string, unknown>)
+          : undefined;
+      const sourceImageSize =
+        typeof sourceImageSizeRaw?.width === "number" && typeof sourceImageSizeRaw?.height === "number"
+          ? { width: sourceImageSizeRaw.width, height: sourceImageSizeRaw.height }
+          : undefined;
+      return res.json(
+        await generateAiScript(prompt, mode, controller.signal, {
+          sourceImageDataUrl: sourceImageDataUrl || undefined,
+          imageAnchors,
+          sourceImageSize,
+        }),
+      );
     } catch (error) {
       if (controller.signal.aborted && !res.headersSent) {
         return res.status(499).json({ message: "生成讲解已取消。" });

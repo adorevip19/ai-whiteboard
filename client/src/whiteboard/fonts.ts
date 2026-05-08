@@ -1,5 +1,7 @@
 export const WHITEBOARD_TEXT_FONT_FAMILY =
-  '"Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif';
+  '"Kaiti SC", "STKaiti", "LXGW WenKai", "FZKai-Z03S", "KaiTi", "楷体", "Songti SC", "Noto Serif CJK SC", "PingFang SC", serif';
 
 export const WHITEBOARD_MONO_FONT_FAMILY =
-  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "WenQuanYi Micro Hei", monospace';
+  '"Kaiti SC", "STKaiti", "LXGW WenKai", "FZKai-Z03S", "KaiTi", "楷体", "Noto Serif CJK SC", ui-monospace, SFMono-Regular, monospace';
+
+export const WHITEBOARD_HANDWRITING_FONT_FAMILY = WHITEBOARD_TEXT_FONT_FAMILY;

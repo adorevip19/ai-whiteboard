@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AnnotationElement,
   CanvasConfig,
-  LayoutPageTheme,
   RenderedElement,
 } from "./commandTypes";
 import {
@@ -33,17 +32,8 @@ function takeVisibleLines(lines: string[], visibleChars: number) {
   });
 }
 
-function layoutTheme(theme: LayoutPageTheme) {
-  if (theme === "warm") {
-    return { accent: "#d97706", fill: "#fffbeb", stroke: "#f3d08a", title: "#7c2d12" };
-  }
-  if (theme === "cool") {
-    return { accent: "#2563eb", fill: "#eff6ff", stroke: "#bfdbfe", title: "#1e3a8a" };
-  }
-  if (theme === "green") {
-    return { accent: "#16a34a", fill: "#f0fdf4", stroke: "#bbf7d0", title: "#14532d" };
-  }
-  return { accent: "#334155", fill: "#f8fafc", stroke: "#d8e0ea", title: "#111827" };
+function mathRenderPadding(fontSize: number, displayMode = false) {
+  return Math.ceil(fontSize * (displayMode ? 0.9 : 0.75));
 }
 
 export function WhiteboardCanvas({
@@ -98,84 +88,50 @@ export function WhiteboardCanvas({
         width={displayW}
         height={displayH}
         viewBox={`0 0 ${canvas.width} ${canvas.height}`}
-        className={cn(fullBleed ? "" : "rounded-lg border border-border/70 shadow-xl")}
+        className={cn("whiteboard-handdraw", fullBleed ? "" : "rounded-lg border border-border/70 shadow-xl")}
         style={{ background: canvas.background }}
         data-testid="whiteboard-svg"
       >
+        <defs>
+          <filter id="whiteboard-hand-line" x="-6%" y="-6%" width="112%" height="112%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.018"
+              numOctaves="1"
+              seed="8"
+              result="handNoise"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="handNoise"
+              scale="0.28"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+        </defs>
         {elements.map((el) => {
           const transform = elementTransform(el);
           if (el.kind === "layout") {
-            const theme = layoutTheme(el.theme);
-            return (
-              <g key={el.id} transform={transform} opacity={el.progress} data-testid={`layout-${el.id}`}>
-                <rect x={0} y={0} width={canvas.width} height={canvas.height} fill="#ffffff" />
-                <rect x={42} y={38} width={8} height={52} rx={4} fill={theme.accent} />
-                {el.title ? (
-                  <text
-                    x={70}
-                    y={72}
-                    fill={theme.title}
-                    fontSize={38}
-                    fontWeight={700}
-                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
-                  >
-                    {el.title}
-                  </text>
-                ) : null}
-                {el.subtitle ? (
-                  <text
-                    x={72}
-                    y={108}
-                    fill="#64748b"
-                    fontSize={20}
-                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
-                  >
-                    {el.subtitle}
-                  </text>
-                ) : null}
-                {el.slots.map((slot) => (
-                  <g key={`${el.id}-${slot.id}`}>
-                    <rect
-                      x={slot.x}
-                      y={slot.y}
-                      width={slot.width}
-                      height={slot.height}
-                      rx={8}
-                      fill={theme.fill}
-                      stroke={theme.stroke}
-                      strokeWidth={1.5}
-                    />
-                  </g>
-                ))}
-              </g>
-            );
+            return null;
           }
           if (el.kind === "paragraph") {
-            const clipId = `clip-paragraph-${el.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
             const visibleLines = takeVisibleLines(el.lines, el.visibleChars);
-            const maxLines = Math.max(1, Math.floor((el.height - el.padding * 2) / el.lineGap));
             return (
               <g key={el.id} transform={transform} data-testid={`paragraph-${el.id}`}>
-                <defs>
-                  <clipPath id={clipId}>
-                    <rect x={el.x} y={el.y} width={el.width} height={el.height} rx={8} />
-                  </clipPath>
-                </defs>
-                <g clipPath={`url(#${clipId})`}>
-                  {visibleLines.slice(0, maxLines).map((line, index) => (
-                    <text
-                      key={`${el.id}-${index}`}
-                      x={el.x + el.padding}
-                      y={el.y + el.padding + el.fontSize + index * el.lineGap}
-                      fill={el.color}
-                      fontSize={el.fontSize}
-                      fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
-                      dominantBaseline="alphabetic"
-                    >
-                      {line}
-                    </text>
-                  ))}
-                </g>
+                {visibleLines.map((line, index) => (
+                  <text
+                    key={`${el.id}-${index}`}
+                    x={el.x + el.padding}
+                    y={el.y + el.padding + el.fontSize + index * el.lineGap}
+                    fill={el.color}
+                    fontSize={el.fontSize}
+                    fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}
+                    dominantBaseline="alphabetic"
+                  >
+                    {line}
+                  </text>
+                ))}
               </g>
             );
           }
@@ -220,18 +176,19 @@ export function WhiteboardCanvas({
             );
           }
           if (el.kind === "math") {
+            const padding = mathRenderPadding(el.fontSize, el.displayMode);
             return (
               <foreignObject
                 key={el.id}
-                x={el.x}
-                y={el.y}
-                width={el.bbox.width}
-                height={el.bbox.height}
+                x={el.x - padding}
+                y={el.y - padding}
+                width={el.bbox.width + padding * 2}
+                height={el.bbox.height + padding * 2}
                 transform={transform}
                 opacity={el.opacity}
                 data-testid={`math-${el.id}`}
               >
-                <div>
+                <div style={{ padding, overflow: "visible" }}>
                   <MathRenderer
                     latex={el.latex}
                     fontSize={el.fontSize}
@@ -243,22 +200,24 @@ export function WhiteboardCanvas({
             );
           }
           if (el.kind === "math_steps") {
+            const padding = mathRenderPadding(el.fontSize, el.displayMode);
             return (
               <foreignObject
                 key={el.id}
-                x={el.x}
-                y={el.y}
-                width={el.bbox.width}
-                height={el.bbox.height}
+                x={el.x - padding}
+                y={el.y - padding}
+                width={el.bbox.width + padding * 2}
+                height={el.bbox.height + padding * 2}
                 transform={transform}
                 data-testid={`math-steps-${el.id}`}
               >
-                <div>
+                <div style={{ padding, overflow: "visible" }}>
                   {el.steps.map((step, index) => (
                     <div
                       key={`${el.id}-${index}`}
                       style={{
                         height: el.lineGap,
+                        overflow: "visible",
                         opacity: index < el.visibleCount ? 1 : 0,
                         transition: "opacity 120ms linear",
                       }}
@@ -418,6 +377,38 @@ export function WhiteboardCanvas({
               />
             );
           }
+          if (el.kind === "image") {
+            const clipId = `image-clip-${el.id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+            const opacity = Math.max(0, Math.min(1, el.opacity * el.progress));
+            return (
+              <g key={el.id} transform={transform} data-testid={`image-${el.id}`}>
+                {el.radius > 0 ? (
+                  <defs>
+                    <clipPath id={clipId}>
+                      <rect
+                        x={el.x}
+                        y={el.y}
+                        width={el.width}
+                        height={el.height}
+                        rx={el.radius}
+                        ry={el.radius}
+                      />
+                    </clipPath>
+                  </defs>
+                ) : null}
+                <image
+                  href={el.src}
+                  x={el.x}
+                  y={el.y}
+                  width={el.width}
+                  height={el.height}
+                  preserveAspectRatio="xMidYMid meet"
+                  opacity={opacity}
+                  clipPath={el.radius > 0 ? `url(#${clipId})` : undefined}
+                />
+              </g>
+            );
+          }
           if (el.kind === "shape") {
             const arrow = el.arrowHead;
             let arrowPoints = "";
@@ -523,7 +514,7 @@ export function WhiteboardCanvas({
                   height={el.height}
                   fill="none"
                   stroke={el.gridColor}
-                  strokeWidth={1}
+                  strokeWidth={1.25}
                   vectorEffect="non-scaling-stroke"
                 />
                 {el.grid
@@ -535,7 +526,7 @@ export function WhiteboardCanvas({
                         x2={toCanvasX(tick)}
                         y2={el.y + el.height}
                         stroke={el.gridColor}
-                        strokeWidth={1}
+                        strokeWidth={1.25}
                         vectorEffect="non-scaling-stroke"
                       />
                     ))
@@ -549,7 +540,7 @@ export function WhiteboardCanvas({
                         x2={el.x + el.width}
                         y2={toCanvasY(tick)}
                         stroke={el.gridColor}
-                        strokeWidth={1}
+                        strokeWidth={1.25}
                         vectorEffect="non-scaling-stroke"
                       />
                     ))
@@ -560,7 +551,7 @@ export function WhiteboardCanvas({
                   x2={el.x + el.width}
                   y2={xAxisY}
                   stroke={el.axisColor}
-                  strokeWidth={2}
+                  strokeWidth={2.75}
                   vectorEffect="non-scaling-stroke"
                 />
                 <line
@@ -569,7 +560,7 @@ export function WhiteboardCanvas({
                   x2={yAxisX}
                   y2={el.y + el.height}
                   stroke={el.axisColor}
-                  strokeWidth={2}
+                  strokeWidth={2.75}
                   vectorEffect="non-scaling-stroke"
                 />
                 {el.showLabels

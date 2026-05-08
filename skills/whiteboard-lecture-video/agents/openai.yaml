@@ -1,0 +1,3 @@
+display_name: Whiteboard Lecture Video
+short_description: Make whiteboard lecture MP4s.
+default_prompt: Create a whiteboard lecture video from images or a topic, render MP4, QA frames, and report paths.

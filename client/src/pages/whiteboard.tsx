@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
@@ -41,6 +41,8 @@ import {
 import { WhiteboardCanvas } from "@/whiteboard/WhiteboardCanvas";
 import { NarrationBar } from "@/whiteboard/NarrationBar";
 import { ScriptRunner, type WaitState } from "@/whiteboard/ScriptRunner";
+import { WHITEBOARD_HANDWRITING_FONT_FAMILY } from "@/whiteboard/fonts";
+import { ensureKatexRuntimeLoaded } from "@/whiteboard/MathRenderer";
 import japaneseWashiBackground from "@/assets/japanese-washi-bg.svg";
 import {
   validateScript,
@@ -132,9 +134,28 @@ type ScriptPreflightResponse = {
 type ImageRecognitionResponse = {
   problemText: string;
   diagramDescription: string;
+  imageAnchors?: Array<{
+    id: string;
+    label?: string;
+    bbox?: [number, number, number, number];
+    point?: [number, number];
+  }>;
   subject?: string;
   confidence: "high" | "medium" | "low";
   notes?: string;
+};
+
+type PreparedWhiteboardImage = {
+  dataUrl: string;
+  width: number;
+  height: number;
+};
+
+type SourceImageContext = {
+  prompt: string;
+  sourceImageDataUrl: string;
+  sourceImageSize?: { width: number; height: number };
+  imageAnchors?: ImageRecognitionResponse["imageAnchors"];
 };
 
 type KnowledgeSummaryResponse = {
@@ -184,10 +205,16 @@ type SavedLecture = {
 };
 
 const MAX_UPLOAD_IMAGE_SIZE = 10 * 1024 * 1024;
+const WHITEBOARD_SOURCE_IMAGE_MAX_SIDE = 1400;
+const WHITEBOARD_SOURCE_IMAGE_TARGET_BYTES = 1_200_000;
 const TTS_RETRY_DELAYS_MS = [1200, 2500, 5000, 8000, 12000];
 const VIDEO_FRAME_INTERVAL_MS = 1000 / 15;
 const VIDEO_RECORDING_SEGMENT_MS = 45_000;
 const SVG_FRAME_RENDER_TIMEOUT_MS = 2500;
+const FLOATING_CONTROL_SIZE = 56;
+const FLOATING_CONTROL_MARGIN = 16;
+const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
+const EXPORT_NARRATION_TAIL_PADDING_MS = 300;
 const SILENT_AUDIO_DATA_URI =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==";
 
@@ -242,19 +269,278 @@ function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number, message: str
   });
 }
 
-async function blobToBase64(blob: Blob) {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    let chunkBinary = "";
-    for (let j = 0; j < chunk.length; j++) {
-      chunkBinary += String.fromCharCode(chunk[j]);
+function latexToExportText(latex: string): string {
+  return normalizeLatexPlainText(replaceLatexFractions(latex));
+}
+
+function readLatexGroup(value: string, start: number) {
+  let depth = 0;
+  let text = "";
+  for (let i = start; i < value.length; i++) {
+    const char = value[i];
+    if (char === "{") {
+      if (depth > 0) text += char;
+      depth++;
+      continue;
     }
-    binary += chunkBinary;
+    if (char === "}") {
+      depth--;
+      if (depth === 0) return { text, end: i + 1 };
+      text += char;
+      continue;
+    }
+    text += char;
   }
-  return btoa(binary);
+  return { text, end: value.length };
+}
+
+function replaceLatexFractions(latex: string): string {
+  const readGroup = (value: string, start: number) => {
+    let depth = 0;
+    let text = "";
+    for (let i = start; i < value.length; i++) {
+      const char = value[i];
+      if (char === "{") {
+        if (depth > 0) text += char;
+        depth++;
+        continue;
+      }
+      if (char === "}") {
+        depth--;
+        if (depth === 0) return { text, end: i + 1 };
+        text += char;
+        continue;
+      }
+      text += char;
+    }
+    return { text, end: value.length };
+  };
+  const replaceFractions = (value: string) => {
+    let output = "";
+    for (let i = 0; i < value.length; i++) {
+      const command = ["\\dfrac", "\\tfrac", "\\frac"].find((candidate) =>
+        value.startsWith(candidate, i),
+      );
+      if (!command || value[i + command.length] !== "{") {
+        output += value[i];
+        continue;
+      }
+      const numerator = readGroup(value, i + command.length);
+      const denominator = value[numerator.end] === "{"
+        ? readGroup(value, numerator.end)
+        : { text: "", end: numerator.end };
+      output += `(${replaceFractions(numerator.text)})/(${replaceFractions(denominator.text)})`;
+      i = denominator.end - 1;
+    }
+    return output;
+  };
+
+  return replaceFractions(latex);
+}
+
+function normalizeLatexPlainText(latex: string): string {
+  const commandSymbols: Record<string, string> = {
+    "\\alpha": "α",
+    "\\beta": "β",
+    "\\gamma": "γ",
+    "\\delta": "δ",
+    "\\Delta": "Δ",
+    "\\epsilon": "ε",
+    "\\varepsilon": "ε",
+    "\\zeta": "ζ",
+    "\\eta": "η",
+    "\\theta": "θ",
+    "\\vartheta": "θ",
+    "\\Theta": "Θ",
+    "\\lambda": "λ",
+    "\\mu": "μ",
+    "\\nu": "ν",
+    "\\xi": "ξ",
+    "\\Xi": "Ξ",
+    "\\pi": "π",
+    "\\Pi": "Π",
+    "\\rho": "ρ",
+    "\\sigma": "σ",
+    "\\Sigma": "Σ",
+    "\\sum": "Σ",
+    "\\tau": "τ",
+    "\\phi": "φ",
+    "\\varphi": "φ",
+    "\\Phi": "Φ",
+    "\\omega": "ω",
+    "\\Omega": "Ω",
+    "\\infty": "∞",
+    "\\partial": "∂",
+    "\\nabla": "∇",
+    "\\pm": "±",
+    "\\times": "×",
+    "\\div": "÷",
+    "\\approx": "≈",
+    "\\sim": "∼",
+    "\\equiv": "≡",
+  };
+  const withSymbols = Object.entries(commandSymbols).reduce(
+    (value, [command, symbol]) => value.replaceAll(command, symbol),
+    latex,
+  );
+
+  return withSymbols
+    .replace(/\\text\{([^}]*)\}/g, "$1")
+    .replace(/\\mathrm\{([^}]*)\}/g, "$1")
+    .replace(/\\left|\\right/g, "")
+    .replace(/\\qquad|\\quad|\\,|\\;|\\ /g, " ")
+    .replace(/\\lim_\{([^}]*)\}/g, "lim $1")
+    .replace(/\\to/g, "→")
+    .replace(/\\Longleftrightarrow/g, "⇔")
+    .replace(/\\Rightarrow/g, "⇒")
+    .replace(/\\therefore/g, "∴")
+    .replace(/\\exists/g, "∃")
+    .replace(/\\in/g, "∈")
+    .replace(/\\cdot/g, "·")
+    .replace(/\\ell/g, "ℓ")
+    .replace(/\\frac/g, "")
+    .replace(/\\sin/g, "sin")
+    .replace(/\\cos/g, "cos")
+    .replace(/\\tan/g, "tan")
+    .replace(/\\sqrt\{([^}]*)\}/g, "√($1)")
+    .replace(/\\leq/g, "≤")
+    .replace(/\\geq/g, "≥")
+    .replace(/\\neq/g, "≠")
+    .replace(/\\'/g, "'")
+    .replace(/_\{([^}]*)\}/g, "₍$1₎")
+    .replace(/_([A-Za-z0-9]+)/g, "₍$1₎")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type ExportMathPart =
+  | { type: "text"; text: string }
+  | { type: "fraction"; numerator: ExportMathPart[]; denominator: ExportMathPart[] };
+
+function parseLatexForExport(latex: string): ExportMathPart[] {
+  const parts: ExportMathPart[] = [];
+  let buffer = "";
+  const flush = () => {
+    const text = normalizeLatexPlainText(buffer);
+    if (text) parts.push({ type: "text", text });
+    buffer = "";
+  };
+
+  for (let i = 0; i < latex.length; i++) {
+    const command = ["\\dfrac", "\\tfrac", "\\frac"].find((candidate) =>
+      latex.startsWith(candidate, i),
+    );
+    if (!command || latex[i + command.length] !== "{") {
+      buffer += latex[i];
+      continue;
+    }
+
+    flush();
+    const numerator = readLatexGroup(latex, i + command.length);
+    const denominator = latex[numerator.end] === "{"
+      ? readLatexGroup(latex, numerator.end)
+      : { text: "", end: numerator.end };
+    parts.push({
+      type: "fraction",
+      numerator: parseLatexForExport(numerator.text),
+      denominator: parseLatexForExport(denominator.text),
+    });
+    i = denominator.end - 1;
+  }
+
+  flush();
+  return parts;
+}
+
+function estimateExportMathPartsWidth(parts: ExportMathPart[], fontSize: number): number {
+  return parts.reduce((width, part) => {
+    if (part.type === "text") return width + estimateExportTextWidth(part.text, fontSize);
+    const numeratorWidth = estimateExportMathPartsWidth(part.numerator, fontSize * 0.78);
+    const denominatorWidth = estimateExportMathPartsWidth(part.denominator, fontSize * 0.78);
+    return width + Math.max(numeratorWidth, denominatorWidth, fontSize * 1.5) + fontSize * 0.45;
+  }, 0);
+}
+
+function estimateExportTextWidth(text: string, fontSize: number) {
+  let units = 0;
+  for (const char of Array.from(text)) {
+    units += /[\u4e00-\u9fff]/.test(char) ? 0.95 : /[il.,:;|]/.test(char) ? 0.28 : 0.58;
+  }
+  return Math.max(fontSize * 0.4, units * fontSize);
+}
+
+function appendSvgText(
+  group: SVGGElement,
+  textContent: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  color: string,
+) {
+  const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  text.setAttribute("x", String(x));
+  text.setAttribute("y", String(y));
+  text.setAttribute("fill", color);
+  text.setAttribute("font-size", String(fontSize));
+  text.setAttribute("font-family", WHITEBOARD_HANDWRITING_FONT_FAMILY);
+  text.textContent = textContent;
+  group.appendChild(text);
+}
+
+function appendExportMathParts(
+  group: SVGGElement,
+  parts: ExportMathPart[],
+  x: number,
+  baselineY: number,
+  fontSize: number,
+  color: string,
+) {
+  let cursorX = x;
+  for (const part of parts) {
+    if (part.type === "text") {
+      appendSvgText(group, part.text, cursorX, baselineY, fontSize, color);
+      cursorX += estimateExportTextWidth(part.text, fontSize);
+      continue;
+    }
+
+    const fractionFontSize = fontSize * 0.78;
+    const numeratorWidth = estimateExportMathPartsWidth(part.numerator, fractionFontSize);
+    const denominatorWidth = estimateExportMathPartsWidth(part.denominator, fractionFontSize);
+    const fractionWidth = Math.max(numeratorWidth, denominatorWidth, fontSize * 1.5) + fontSize * 0.45;
+    const fractionX = cursorX;
+    const centerX = fractionX + fractionWidth / 2;
+    const numeratorX = centerX - numeratorWidth / 2;
+    const denominatorX = centerX - denominatorWidth / 2;
+    const lineY = baselineY - fontSize * 0.28;
+
+    appendExportMathParts(
+      group,
+      part.numerator,
+      numeratorX,
+      baselineY - fontSize * 0.68,
+      fractionFontSize,
+      color,
+    );
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(fractionX + fontSize * 0.12));
+    line.setAttribute("x2", String(fractionX + fractionWidth - fontSize * 0.12));
+    line.setAttribute("y1", String(lineY));
+    line.setAttribute("y2", String(lineY));
+    line.setAttribute("stroke", color);
+    line.setAttribute("stroke-width", String(Math.max(1.5, fontSize * 0.045)));
+    group.appendChild(line);
+    appendExportMathParts(
+      group,
+      part.denominator,
+      denominatorX,
+      baselineY + fontSize * 0.55,
+      fractionFontSize,
+      color,
+    );
+    cursorX += fractionWidth;
+  }
+  return cursorX - x;
 }
 
 class TtsSynthesisError extends Error {
@@ -317,6 +603,7 @@ export default function WhiteboardPage() {
   const ttsPrefetchControllerRef = useRef<AbortController | null>(null);
   const aiGenerationControllerRef = useRef<AbortController | null>(null);
   const aiGenerationIdRef = useRef(0);
+  const sourceImageContextRef = useRef<SourceImageContext | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const videoRenderControllerRef = useRef<AbortController | null>(null);
   const videoRenderIdRef = useRef(0);
@@ -333,6 +620,10 @@ export default function WhiteboardPage() {
   const [controlsOpen, setControlsOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [morePanelOpen, setMorePanelOpen] = useState(false);
+  const [floatingControlPosition, setFloatingControlPosition] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [readyToPlayOpen, setReadyToPlayOpen] = useState(false);
   const [knowledgeSummary, setKnowledgeSummary] = useState<KnowledgeSummary | null>(null);
   const [knowledgeStatus, setKnowledgeStatus] = useState<KnowledgeStatus>("idle");
@@ -345,6 +636,31 @@ export default function WhiteboardPage() {
     useState<TopicGenerationStatus>("idle");
   const [topicGenerationProgress, setTopicGenerationProgress] = useState(0);
   const [topicGenerationMessage, setTopicGenerationMessage] = useState("");
+  const floatingControlDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressNextFloatingClickRef = useRef(false);
+
+  const getDefaultFloatingControlPosition = () => ({
+    x: window.innerWidth - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN,
+    y: window.innerHeight - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN,
+  });
+
+  const clampFloatingControlPosition = (position: { x: number; y: number }) => ({
+    x: Math.max(
+      FLOATING_CONTROL_MARGIN,
+      Math.min(position.x, window.innerWidth - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN),
+    ),
+    y: Math.max(
+      FLOATING_CONTROL_MARGIN,
+      Math.min(position.y, window.innerHeight - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN),
+    ),
+  });
 
   const updateStepProgress = (index: number, total = stepTotalRef.current) => {
     stepIndexRef.current = index;
@@ -435,6 +751,23 @@ export default function WhiteboardPage() {
         URL.revokeObjectURL(cached.url);
       });
       ttsCacheRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    setFloatingControlPosition((position) =>
+      position ? clampFloatingControlPosition(position) : getDefaultFloatingControlPosition(),
+    );
+    const onResize = () => {
+      setFloatingControlPosition((position) =>
+        position ? clampFloatingControlPosition(position) : getDefaultFloatingControlPosition(),
+      );
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
     };
   }, []);
 
@@ -539,6 +872,61 @@ export default function WhiteboardPage() {
   const collapseFloatingUi = () => {
     setControlsOpen(false);
     setMorePanelOpen(false);
+  };
+
+  const handleFloatingControlPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    const position = floatingControlPosition ?? getDefaultFloatingControlPosition();
+    floatingControlDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: position.x,
+      startY: position.y,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleFloatingControlPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    const drag = floatingControlDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+    if (!drag.moved && Math.hypot(dx, dy) > 4) {
+      drag.moved = true;
+      collapseFloatingUi();
+    }
+    if (!drag.moved) return;
+    event.preventDefault();
+    setFloatingControlPosition(
+      clampFloatingControlPosition({
+        x: drag.startX + dx,
+        y: drag.startY + dy,
+      }),
+    );
+  };
+
+  const finishFloatingControlDrag = (event: PointerEvent<HTMLButtonElement>) => {
+    const drag = floatingControlDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    floatingControlDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (drag.moved) suppressNextFloatingClickRef.current = true;
+  };
+
+  const handleFloatingControlClick = () => {
+    if (suppressNextFloatingClickRef.current) {
+      suppressNextFloatingClickRef.current = false;
+      return;
+    }
+    if (controlsOpen) {
+      collapseFloatingUi();
+    } else {
+      setControlsOpen(true);
+    }
   };
 
   useEffect(() => {
@@ -726,6 +1114,9 @@ export default function WhiteboardPage() {
     );
     if (narrations.length === 0) {
       setTtsStatus("脚本没有旁白");
+      if (ttsPrefetchControllerRef.current === controller) {
+        ttsPrefetchControllerRef.current = null;
+      }
       return true;
     }
 
@@ -1297,6 +1688,41 @@ export default function WhiteboardPage() {
       reader.readAsDataURL(file);
     });
 
+  const prepareWhiteboardSourceImage = (dataUrl: string) =>
+    new Promise<PreparedWhiteboardImage>((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        const width = image.naturalWidth || image.width;
+        const height = image.naturalHeight || image.height;
+        if (!width || !height) {
+          resolve({ dataUrl, width: 0, height: 0 });
+          return;
+        }
+        const maxSide = Math.max(width, height);
+        const scale = Math.min(1, WHITEBOARD_SOURCE_IMAGE_MAX_SIDE / maxSide);
+        const targetWidth = Math.max(1, Math.round(width * scale));
+        const targetHeight = Math.max(1, Math.round(height * scale));
+        if (scale === 1 && dataUrl.length <= WHITEBOARD_SOURCE_IMAGE_TARGET_BYTES) {
+          resolve({ dataUrl, width, height });
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve({ dataUrl, width, height });
+          return;
+        }
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+        ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+        resolve({ dataUrl: canvas.toDataURL("image/jpeg", 0.86), width: targetWidth, height: targetHeight });
+      };
+      image.onerror = () => resolve({ dataUrl, width: 0, height: 0 });
+      image.src = dataUrl;
+    });
+
   const handleRecognizeImage = async (file: File) => {
     if (!file.type.startsWith("image/")) {
       setAiStatus("error");
@@ -1323,6 +1749,7 @@ export default function WhiteboardPage() {
     let progressTimer: number | undefined;
     try {
       const imageDataUrl = await readImageAsDataUrl(file);
+      const sourceImage = await prepareWhiteboardSourceImage(imageDataUrl);
       if (controller.signal.aborted || aiGenerationIdRef.current !== generationId) return;
       setAiMessage("正在识别题目图片...");
       progressTimer = window.setInterval(() => {
@@ -1342,7 +1769,11 @@ export default function WhiteboardPage() {
         explanationMode === "concise"
           ? "讲解模式：简洁讲解。讲解开始第一段有效旁白仍必须先朗读原题或复述问题；用户可能已经读过题并思考过，读题后只需要用一两句话点破最关键、最容易卡住的思路；仍然要配合白板动作展示关键关系。"
           : "讲解模式：详细讲解。讲解开始第一段有效旁白必须先朗读原题或复述问题；读题之后必须帮学生分析题干，拆出已知条件、图示信息和要解决的问题。",
-        "如果识别内容包含图示/图片/实验装置/函数图/几何图/统计图，必须在白板上重构关键图示。不要只讲文字。即使图示不复杂，也要用线段、矩形、箭头、坐标系、几何命令或标签把图中关键结构画出来。",
+        "这道题的原始图片会作为白板图片资源传入。带图题优先直接展示原图，并在原图旁边或原图上用激光笔、箭头、短标签讲解关键位置；不要完整复刻原图。",
+        result.imageAnchors?.length
+          ? `图片关键区域锚点：\n${JSON.stringify(result.imageAnchors, null, 2)}\n讲解时优先使用这些锚点做精准指示：laser_pointer 可写 imageAnchor，圈画可写 annotate_circle.imageAnchor，箭头端点可写 fromImageAnchor/toImageAnchor。`
+          : "",
+        "如果需要额外重画 F-t、v-t、s-t、函数图、折线图或阶梯图作为辅助示意，必须把每一段图像都重构出来：分段常量画水平段，匀变速画斜线段，零值段也要画，不能留下空坐标系，也不能只画其中一段。",
         result.subject ? `学科/类型：${result.subject}` : "",
         `题目内容：\n${result.problemText}`,
         result.diagramDescription ? `图片/图示内容：\n${result.diagramDescription}` : "",
@@ -1367,9 +1798,23 @@ export default function WhiteboardPage() {
       if (aiGenerationControllerRef.current === controller) {
         aiGenerationControllerRef.current = null;
       }
+      const sourceImageContext: SourceImageContext = {
+        prompt: nextPrompt,
+        sourceImageDataUrl: sourceImage.dataUrl,
+        sourceImageSize:
+          sourceImage.width > 0 && sourceImage.height > 0
+            ? { width: sourceImage.width, height: sourceImage.height }
+            : undefined,
+        imageAnchors: result.imageAnchors,
+      };
+      sourceImageContextRef.current = sourceImageContext;
       await handleGenerateWithAi({
         promptOverride: nextPrompt,
         readyMessage: "图片识别和讲解脚本已准备好。",
+        generatingMessage: "图片已识别，正在生成并修复讲解脚本...",
+        sourceImageDataUrl: sourceImageContext.sourceImageDataUrl,
+        sourceImageSize: sourceImageContext.sourceImageSize,
+        imageAnchors: sourceImageContext.imageAnchors,
       });
     } catch (error) {
       if (isAbortError(error) || controller.signal.aborted) {
@@ -1430,10 +1875,25 @@ export default function WhiteboardPage() {
     options: {
       promptOverride?: string;
       readyMessage?: string;
+      generatingMessage?: string;
+      sourceImageDataUrl?: string;
+      sourceImageSize?: { width: number; height: number };
+      imageAnchors?: ImageRecognitionResponse["imageAnchors"];
     } = {},
   ) => {
     const prompt = (options.promptOverride ?? aiPrompt).trim();
     if (!prompt) return;
+    const retainedSourceImage =
+      !options.sourceImageDataUrl &&
+      sourceImageContextRef.current &&
+      (prompt === sourceImageContextRef.current.prompt ||
+        prompt.includes("原始图片会作为白板图片资源传入") ||
+        prompt.includes("图片关键区域锚点"))
+        ? sourceImageContextRef.current
+        : null;
+    const sourceImageDataUrl = options.sourceImageDataUrl ?? retainedSourceImage?.sourceImageDataUrl;
+    const sourceImageSize = options.sourceImageSize ?? retainedSourceImage?.sourceImageSize;
+    const imageAnchors = options.imageAnchors ?? retainedSourceImage?.imageAnchors;
     aiGenerationControllerRef.current?.abort();
     const controller = new AbortController();
     const generationId = aiGenerationIdRef.current + 1;
@@ -1444,7 +1904,7 @@ export default function WhiteboardPage() {
     ttsEnabledRef.current = true;
     setAiStatus("generating");
     setAiProgress(12);
-    setAiMessage("正在准备讲解...");
+    setAiMessage(options.generatingMessage ?? "正在准备讲解...");
     setPreflightReport(null);
     setReadyToPlayOpen(false);
     let progressTimer: number | undefined;
@@ -1458,7 +1918,13 @@ export default function WhiteboardPage() {
       }, 900);
       const result = await callAiEndpoint<AiScriptResponse>(
         "/api/ai-script/generate",
-        { prompt, mode: explanationMode },
+        {
+          prompt,
+          mode: explanationMode,
+          sourceImageDataUrl,
+          sourceImageSize,
+          imageAnchors,
+        },
         controller.signal,
       );
       if (controller.signal.aborted || aiGenerationIdRef.current !== generationId) return;
@@ -1609,10 +2075,12 @@ export default function WhiteboardPage() {
     aiGenerationControllerRef.current = controller;
 
     try {
+      await unlockNarrationAudio();
       setAiStatus("checking");
       setAiProgress(12);
       setAiMessage(`正在读取并预检脚本文件：${file.name}`);
       setPreflightReport(null);
+      setReadyToPlayOpen(false);
 
       const fileText = await file.text();
       if (controller.signal.aborted || aiGenerationIdRef.current !== generationId) return;
@@ -1636,6 +2104,7 @@ export default function WhiteboardPage() {
       }
 
       const inputScriptText = JSON.stringify(result.script, null, 2);
+      setAiProgress(28);
       const preflight = await callAiEndpoint<ScriptPreflightResponse>(
         "/api/ai-script/preflight",
         { scriptText: inputScriptText },
@@ -1673,6 +2142,7 @@ export default function WhiteboardPage() {
         nextKnowledgeSummary = repaired.knowledgeSummary;
       }
 
+      setAiProgress(preflight.report.errors > 0 || preflight.report.warnings > 0 ? 70 : 58);
       const finalParsed = JSON.parse(nextScriptText);
       const finalValidated = validateScript(finalParsed);
       if (!finalValidated.ok) {
@@ -1681,12 +2151,15 @@ export default function WhiteboardPage() {
 
       if (typeof maybeWrappedScript?.ttsEnabled === "boolean") {
         setTtsEnabled(maybeWrappedScript.ttsEnabled);
+        ttsEnabledRef.current = maybeWrappedScript.ttsEnabled;
       }
       if (
         typeof maybeWrappedScript?.playbackSpeed === "number" &&
         Number.isFinite(maybeWrappedScript.playbackSpeed)
       ) {
-        setPlaybackSpeed(Math.max(0.5, Math.min(maybeWrappedScript.playbackSpeed, 1.5)));
+        const nextPlaybackSpeed = Math.max(0.5, Math.min(maybeWrappedScript.playbackSpeed, 1.5));
+        setPlaybackSpeed(nextPlaybackSpeed);
+        playbackSpeedRef.current = nextPlaybackSpeed;
       }
 
       runnerRef.current?.cancel();
@@ -1700,9 +2173,8 @@ export default function WhiteboardPage() {
       setErrorMsg("");
       setPreflightReport(nextReport);
       setAiExplanation(nextExplanation);
-      setAiMessage(nextMessage);
-      setVideoExportMessage("脚本文件已加载，请运行脚本后再下载 MP4。");
-      resetPreparedVideo("");
+      setAiMessage(`${nextMessage} 正在准备语音...`);
+      setVideoExportMessage("脚本文件已加载，正在准备播放和视频导出。");
       setStatus("idle");
       setIsPaused(false);
       updateStepProgress(0, 0);
@@ -1711,8 +2183,6 @@ export default function WhiteboardPage() {
       setActiveCommands([]);
       setNarration(null);
       setWaitState(null);
-      setAiProgress(100);
-      setAiStatus("idle");
       setSuspendedLectureSession(null);
       setTopicLectureSession(null);
       setTopicGenerationStatus("idle");
@@ -1723,6 +2193,32 @@ export default function WhiteboardPage() {
       } else {
         void summarizeKnowledgeForScript(nextScriptText, { originalPrompt: file.name, force: true });
       }
+
+      if (ttsEnabledRef.current) {
+        setAiStatus("synthesizing");
+        setAiProgress(76);
+        setAiMessage("脚本文件已加载，正在预生成语音...");
+        const ttsReady = await prefetchNarrations(finalValidated.script.commands, {
+          progressStart: 76,
+          progressEnd: 98,
+          syncAiProgress: true,
+        });
+        if (controller.signal.aborted || aiGenerationIdRef.current !== generationId) return;
+        if (!ttsReady) throw new Error("语音预生成失败，请稍后重试或关闭 TTS。");
+      } else {
+        setTtsStatus("TTS 未开启");
+      }
+
+      startVideoPreRender(nextScriptText);
+      setAiMessage(
+        ttsEnabledRef.current
+          ? "脚本和语音已准备好，正在开始播放..."
+          : "脚本已准备好，正在开始播放...",
+      );
+      setAiProgress(100);
+      setAiStatus("idle");
+      enterFullscreen();
+      void runScriptText(nextScriptText, { skipPrefetch: true });
       window.setTimeout(() => setAiProgress(0), 450);
     } catch (e) {
       if (isAbortError(e) || controller.signal.aborted) {
@@ -1991,6 +2487,54 @@ export default function WhiteboardPage() {
     clone.setAttribute("height", String(height));
     clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
     clone.style.background = canvas.background;
+    clone.querySelectorAll("foreignObject").forEach((foreignObject) => {
+      const x = Number(foreignObject.getAttribute("x") ?? 0);
+      const y = Number(foreignObject.getAttribute("y") ?? 0);
+      const transform = foreignObject.getAttribute("transform");
+      const opacity = foreignObject.getAttribute("opacity");
+      const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      if (transform) group.setAttribute("transform", transform);
+      if (opacity) group.setAttribute("opacity", opacity);
+
+      const htmlDivs = Array.from(foreignObject.querySelectorAll("div")).filter((div) => {
+        const text = div.textContent?.trim() ?? "";
+        return text.length > 0 && !Array.from(div.children).some((child) => child.tagName.toLowerCase() === "div");
+      });
+      const mathNodes = Array.from(
+        foreignObject.querySelectorAll<HTMLElement>("[data-latex]"),
+      );
+      const lines = htmlDivs.length > 0
+        ? htmlDivs.map((div) => div.textContent?.replace(/\s+/g, " ").trim() ?? "").filter(Boolean)
+        : [foreignObject.textContent?.replace(/\s+/g, " ").trim() ?? ""].filter(Boolean);
+      const styleSource = (mathNodes[0] ?? htmlDivs[0] ?? foreignObject.querySelector("div")) as HTMLElement | null;
+      const fontSize = Number.parseFloat(styleSource?.style.fontSize ?? "") || 32;
+      const color = styleSource?.style.color || "#111111";
+      const lineGap = fontSize * 1.45;
+
+      if (mathNodes.length > 0) {
+        const padding = Number.parseFloat(
+          (foreignObject.querySelector("div") as HTMLElement | null)?.style.padding ?? "",
+        ) || Math.max(12, fontSize * 0.65);
+        mathNodes.forEach((node, index) => {
+          const latex = node.dataset.latex ?? "";
+          const parts = parseLatexForExport(latex);
+          appendExportMathParts(
+            group,
+            parts,
+            x + padding,
+            y + padding + fontSize + index * Math.max(lineGap, fontSize * 2.25),
+            fontSize,
+            color,
+          );
+        });
+      } else {
+        lines.forEach((line, index) => {
+          appendSvgText(group, line, x, y + fontSize + index * lineGap, fontSize, color);
+        });
+      }
+
+      foreignObject.replaceWith(group);
+    });
     const serialized = new XMLSerializer().serializeToString(clone);
     const url = URL.createObjectURL(new Blob([serialized], { type: "image/svg+xml;charset=utf-8" }));
     try {
@@ -2037,7 +2581,9 @@ export default function WhiteboardPage() {
   const createTtsTimedExportScript = (
     sourceScript: WhiteboardScript,
     audioBuffers: Map<string, ExportAudioBuffer>,
+    playbackSpeed: number,
   ): WhiteboardScript => {
+    const normalizedSpeed = Math.max(0.5, Math.min(playbackSpeed, 2));
     return {
       ...sourceScript,
       commands: sourceScript.commands
@@ -2046,9 +2592,17 @@ export default function WhiteboardPage() {
           const narration = getNarrationFromCommand(command);
           const audio = narration ? audioBuffers.get(narration) : undefined;
           if (!audio || !commandHasDuration(command)) return command;
+          // ScriptRunner shortens visual durations by playback speed and the
+          // whiteboard animation multiplier. For exported videos we want the
+          // visual command itself to last at least as long as the actual spoken
+          // narration, otherwise iOS Safari makes the board feel ahead of voice.
+          const narrationSyncedDuration = Math.ceil(
+            audio.durationMs * WHITEBOARD_ANIMATION_SPEED_MULTIPLIER +
+              EXPORT_NARRATION_TAIL_PADDING_MS * normalizedSpeed,
+          );
           return {
             ...command,
-            duration: Math.max(command.duration, audio.durationMs),
+            duration: Math.max(command.duration, narrationSyncedDuration),
           } as WhiteboardCommand;
         }),
     };
@@ -2245,7 +2799,7 @@ export default function WhiteboardPage() {
     setIsPaused(false);
 
     let frameTimer: number | undefined;
-    let segmentTimer: number | undefined;
+    let recorderDataTimer: number | undefined;
     let audioContext: AudioContext | null = null;
     let silentAudioSource: ConstantSourceNode | null = null;
     const previousTtsEnabled = ttsEnabledRef.current;
@@ -2270,7 +2824,11 @@ export default function WhiteboardPage() {
         ttsEnabledRef.current && audioContext
           ? await decodeExportNarrationBuffers(result.script.commands, audioContext)
           : new Map<string, ExportAudioBuffer>();
-      const exportScript = createTtsTimedExportScript(result.script, exportAudioBuffers);
+      const exportScript = createTtsTimedExportScript(
+        result.script,
+        exportAudioBuffers,
+        exportPlaybackSpeed,
+      );
       setActiveCommands(exportScript.commands);
       setCanvas(exportScript.canvas);
       setElements([]);
@@ -2280,30 +2838,19 @@ export default function WhiteboardPage() {
       setStatus("running");
       setWaitState(null);
       options.onMessage?.("正在准备录制画布...");
+      await ensureKatexRuntimeLoaded();
       await waitForNextFrame();
 
       const getRecordingSvg = () =>
         document.querySelector('[data-testid="whiteboard-svg"]') as SVGSVGElement | null;
       if (!getRecordingSvg()) throw new Error("没有找到白板画布，无法导出视频。");
 
-      let recordingCanvas = document.createElement("canvas");
+      const recordingCanvas = document.createElement("canvas");
       recordingCanvas.width = exportScript.canvas.width;
       recordingCanvas.height = exportScript.canvas.height;
-      const initialContext = recordingCanvas.getContext("2d");
-      if (!initialContext) throw new Error("无法创建视频画布。");
-      let context: CanvasRenderingContext2D = initialContext;
+      const context = recordingCanvas.getContext("2d");
+      if (!context) throw new Error("无法创建视频画布。");
 
-      let currentVideoTrack: CanvasCaptureMediaStreamTrack | null = null;
-      let framePulse = false;
-      const requestVideoFrame = () => {
-        framePulse = !framePulse;
-        context.save();
-        context.globalAlpha = 0.01;
-        context.fillStyle = framePulse ? "#ffffff" : "#fefefe";
-        context.fillRect(recordingCanvas.width - 1, recordingCanvas.height - 1, 1, 1);
-        context.restore();
-        currentVideoTrack?.requestFrame?.();
-      };
       let destination: MediaStreamAudioDestinationNode | null = null;
       if (ttsEnabledRef.current && audioContext) {
         destination = audioContext.createMediaStreamDestination();
@@ -2314,68 +2861,29 @@ export default function WhiteboardPage() {
         silentAudioSource.connect(silentGain).connect(destination);
         silentAudioSource.start();
       }
+      const stream = recordingCanvas.captureStream(15);
+      const [videoTrack] = stream.getVideoTracks() as CanvasCaptureMediaStreamTrack[];
+      if (!videoTrack) throw new Error("无法创建视频轨道。");
+      destination?.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
+      let framePulse = false;
+      const requestVideoFrame = () => {
+        framePulse = !framePulse;
+        context.save();
+        context.globalAlpha = 1;
+        context.fillStyle = framePulse ? "#ffffff" : "#f2f2f2";
+        context.fillRect(recordingCanvas.width - 4, recordingCanvas.height - 4, 4, 4);
+        context.restore();
+        videoTrack.requestFrame?.();
+      };
 
-      const webmSegments: Array<Blob | undefined> = [];
-      const pendingSegmentFinalizers: Promise<void>[] = [];
-      let nextSegmentIndex = 0;
-      let currentRecorder: {
-        index: number;
-        recorder: MediaRecorder;
-        stream: MediaStream;
-        chunks: BlobPart[];
-        done: Promise<Blob>;
-      } | null = null;
-      const startSegmentRecorder = () => {
-        recordingCanvas = document.createElement("canvas");
-        recordingCanvas.width = exportScript.canvas.width;
-        recordingCanvas.height = exportScript.canvas.height;
-        const nextContext = recordingCanvas.getContext("2d");
-        if (!nextContext) throw new Error("无法创建视频画布。");
-        context = nextContext;
-        const stream = recordingCanvas.captureStream(15);
-        const [videoTrack] = stream.getVideoTracks() as CanvasCaptureMediaStreamTrack[];
-        currentVideoTrack = videoTrack ?? null;
-        destination?.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
-        const chunks: BlobPart[] = [];
-        const recorder = new MediaRecorder(stream, { mimeType: recorderMimeType });
-        const done = new Promise<Blob>((resolve) => {
-          recorder.ondataavailable = (event) => {
-            if (event.data.size > 0) chunks.push(event.data);
-          };
-          recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
-        });
-        recorder.start(1000);
-        const currentSvg = getRecordingSvg();
-        if (currentSvg) {
-          void drawSvgToCanvas(
-            currentSvg,
-            context,
-            exportScript.canvas.width,
-            exportScript.canvas.height,
-          )
-            .catch(() => undefined)
-            .finally(() => requestVideoFrame());
-        } else {
-          requestVideoFrame();
-        }
-        requestVideoFrame();
-        return { index: nextSegmentIndex++, recorder, stream, chunks, done };
-      };
-      const finishSegmentRecorder = (
-        segment: NonNullable<typeof currentRecorder>,
-      ) => {
-        if (segment.recorder.state === "recording") {
-          segment.recorder.requestData();
-          segment.recorder.stop();
-        }
-        return segment.done.then((blob) => {
-          const [segmentVideoTrack] =
-            segment.stream.getVideoTracks() as CanvasCaptureMediaStreamTrack[];
-          segment.stream.getVideoTracks().forEach((track) => track.stop());
-          if (currentVideoTrack === segmentVideoTrack) currentVideoTrack = null;
-          if (blob.size > 0) webmSegments[segment.index] = blob;
-        });
-      };
+      const chunks: BlobPart[] = [];
+      const recorder = new MediaRecorder(stream, { mimeType: recorderMimeType });
+      const recordingDone = new Promise<Blob>((resolve) => {
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+        };
+        recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+      });
 
       let drawing = false;
       frameTimer = window.setInterval(() => {
@@ -2413,13 +2921,11 @@ export default function WhiteboardPage() {
       requestVideoFrame();
 
       options.onMessage?.("正在录制白板讲解...");
-      currentRecorder = startSegmentRecorder();
-      segmentTimer = window.setInterval(() => {
-        if (!currentRecorder || currentRecorder.recorder.state !== "recording") return;
-        const finished = currentRecorder;
-        currentRecorder = startSegmentRecorder();
-        pendingSegmentFinalizers.push(finishSegmentRecorder(finished));
+      recorder.start(1000);
+      recorderDataTimer = window.setInterval(() => {
+        if (recorder.state === "recording") recorder.requestData();
       }, VIDEO_RECORDING_SEGMENT_MS);
+      requestVideoFrame();
 
       const runner = new ScriptRunner(
         exportScript,
@@ -2443,22 +2949,22 @@ export default function WhiteboardPage() {
       runnerRef.current = runner;
       await runner.run();
       await new Promise((resolve) => window.setTimeout(resolve, 500));
-      if (segmentTimer !== undefined) {
-        window.clearInterval(segmentTimer);
-        segmentTimer = undefined;
+      if (recorderDataTimer !== undefined) {
+        window.clearInterval(recorderDataTimer);
+        recorderDataTimer = undefined;
       }
-      if (currentRecorder) {
-        pendingSegmentFinalizers.push(finishSegmentRecorder(currentRecorder));
-        currentRecorder = null;
+      if (recorder.state === "recording") {
+        recorder.requestData();
+        recorder.stop();
       }
-      await Promise.all(pendingSegmentFinalizers);
-      const orderedWebmSegments = webmSegments.filter((blob): blob is Blob => Boolean(blob));
-      if (orderedWebmSegments.length === 0) throw new Error("录制结果为空。");
+      const webm = await recordingDone;
+      stream.getTracks().forEach((track) => track.stop());
+      if (webm.size === 0) throw new Error("录制结果为空。");
       setStatus("done");
-      return { segments: orderedWebmSegments };
+      return { segments: [webm] };
     } finally {
       if (frameTimer !== undefined) window.clearInterval(frameTimer);
-      if (segmentTimer !== undefined) window.clearInterval(segmentTimer);
+      if (recorderDataTimer !== undefined) window.clearInterval(recorderDataTimer);
       silentAudioSource?.stop();
       silentAudioSource?.disconnect();
       audioContext?.close().catch(() => undefined);
@@ -2470,9 +2976,14 @@ export default function WhiteboardPage() {
   };
 
   const handleExportMp4 = async () => {
+    if (videoRenderStatus === "rendering") {
+      setVideoExportMessage("MP4 还在后台预渲染，完成后就能下载。");
+      return;
+    }
     if (videoRenderStatus !== "ready") {
-      if (videoRenderStatus === "rendering") {
-        setVideoExportMessage("MP4 还在后台预渲染，完成后就能下载。");
+      if (scriptText.trim()) {
+        startVideoPreRender(scriptText);
+        setVideoExportMessage("正在重新预渲染 MP4。");
       } else {
         setVideoExportMessage("请先生成讲解，系统会自动预渲染 MP4。");
       }
@@ -2500,13 +3011,11 @@ export default function WhiteboardPage() {
         speed: playbackSpeed,
         onMessage: setVideoExportMessage,
       });
-      const segmentsUploadUrl = uploadUrl.replace(/\/webm$/, "/webm-segments");
-      const response = await fetch(segmentsUploadUrl, {
+      const webm = new Blob(recording.segments, { type: "video/webm" });
+      const response = await fetch(uploadUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          segments: await Promise.all(recording.segments.map((segment) => blobToBase64(segment))),
-        }),
+        headers: { "Content-Type": "video/webm" },
+        body: webm,
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
@@ -2514,7 +3023,7 @@ export default function WhiteboardPage() {
       }
       return {
         ok: true,
-        size: recording.segments.reduce((sum, segment) => sum + segment.size, 0),
+        size: webm.size,
       };
     };
     return () => {
@@ -2588,6 +3097,28 @@ export default function WhiteboardPage() {
       : videoRenderStatus === "ready"
         ? "下载 MP4"
         : "导出 MP4";
+  const floatingPanelOpensAbove =
+    (floatingControlPosition?.y ?? window.innerHeight - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN) >
+    window.innerHeight * 0.42;
+  const floatingPanelAlignsRight =
+    (floatingControlPosition?.x ?? window.innerWidth - FLOATING_CONTROL_SIZE - FLOATING_CONTROL_MARGIN) >
+    window.innerWidth * 0.5;
+  const floatingPanelHorizontalStyle = floatingPanelAlignsRight ? { right: 0 } : { left: 0 };
+  const floatingControlStyle = floatingControlPosition
+    ? {
+        left: floatingControlPosition.x,
+        top: floatingControlPosition.y,
+      }
+    : {
+        right: FLOATING_CONTROL_MARGIN,
+        bottom: FLOATING_CONTROL_MARGIN,
+      };
+  const floatingControlsPanelStyle = floatingPanelOpensAbove
+    ? { bottom: FLOATING_CONTROL_SIZE + 8, ...floatingPanelHorizontalStyle }
+    : { top: FLOATING_CONTROL_SIZE + 8, ...floatingPanelHorizontalStyle };
+  const floatingMorePanelStyle = floatingPanelOpensAbove
+    ? { bottom: FLOATING_CONTROL_SIZE + (controlsOpen ? 304 : 8), ...floatingPanelHorizontalStyle }
+    : { top: FLOATING_CONTROL_SIZE + (controlsOpen ? 304 : 8), ...floatingPanelHorizontalStyle };
   const canResumeFromSelectedStep =
     status !== "running" &&
     status !== "preparing" &&
@@ -3250,118 +3781,126 @@ export default function WhiteboardPage() {
             />
           ) : null}
 
-          {!isFullscreen && morePanelOpen ? (
-            <div className="absolute bottom-24 right-4 z-50 w-[min(340px,calc(100vw-2rem))] rounded-xl border bg-background/95 p-3 shadow-2xl backdrop-blur sm:right-6">
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setAiPanelOpen(true);
-                    collapseFloatingUi();
-                  }}
-                  data-testid="button-open-ai-panel"
-                >
-                  <Bot className="mr-1.5 h-3.5 w-3.5" />
-                  生成讲解
-                </Button>
-                <Button
-                  size="sm"
-                  variant={scriptPanelOpen ? "secondary" : "outline"}
-                  onClick={() => {
-                    setScriptPanelOpen((open) => !open);
-                    setLibraryOpen(false);
-                    collapseFloatingUi();
-                  }}
-                  data-testid="button-toggle-script"
-                >
-                  <FileText className="mr-1.5 h-3.5 w-3.5" />
-                  脚本
-                </Button>
-                <Button
-                  size="sm"
-                  variant={libraryOpen ? "secondary" : "outline"}
-                  onClick={() => {
-                    void handleOpenLibrary();
-                    setScriptPanelOpen(false);
-                    collapseFloatingUi();
-                  }}
-                  data-testid="button-open-library"
-                >
-                  <Library className="mr-1.5 h-3.5 w-3.5" />
-                  讲解库
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    void handleSaveLecture();
-                    collapseFloatingUi();
-                  }}
-                  disabled={status === "preparing" || aiBusy}
-                  data-testid="button-save-lecture"
-                >
-                  <Save className="mr-1.5 h-3.5 w-3.5" />
-                  保存
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    void handleCreateShare();
-                    collapseFloatingUi();
-                  }}
-                  disabled={status === "preparing" || aiBusy}
-                  data-testid="button-create-share"
-                >
-                  <Share2 className="mr-1.5 h-3.5 w-3.5" />
-                  分享
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    void handleExportMp4();
-                    collapseFloatingUi();
-                  }}
-                  disabled={exportButtonDisabled}
-                  data-testid="button-export-mp4"
-                >
-                  <Download className="mr-1.5 h-3.5 w-3.5" />
-                  {exportButtonLabel}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    handleLoadSample();
-                    collapseFloatingUi();
-                  }}
-                  data-testid="button-load-sample"
-                >
-                  <FileText className="mr-1.5 h-3.5 w-3.5" />
-                  示例
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    handleClear();
-                    collapseFloatingUi();
-                  }}
-                  data-testid="button-clear"
-                >
-                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                  清空
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
           {!isFullscreen ? (
-            <div className="absolute bottom-4 right-4 z-50 flex flex-col items-end gap-2 sm:bottom-6 sm:right-6">
+            <div
+              className="fixed z-50"
+              style={floatingControlStyle}
+            >
+              {morePanelOpen ? (
+                <div
+                  className="absolute w-[min(340px,calc(100vw-2rem))] rounded-xl border bg-background/95 p-3 shadow-2xl backdrop-blur"
+                  style={floatingMorePanelStyle}
+                >
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setAiPanelOpen(true);
+                        collapseFloatingUi();
+                      }}
+                      data-testid="button-open-ai-panel"
+                    >
+                      <Bot className="mr-1.5 h-3.5 w-3.5" />
+                      生成讲解
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={scriptPanelOpen ? "secondary" : "outline"}
+                      onClick={() => {
+                        setScriptPanelOpen((open) => !open);
+                        setLibraryOpen(false);
+                        collapseFloatingUi();
+                      }}
+                      data-testid="button-toggle-script"
+                    >
+                      <FileText className="mr-1.5 h-3.5 w-3.5" />
+                      脚本
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={libraryOpen ? "secondary" : "outline"}
+                      onClick={() => {
+                        void handleOpenLibrary();
+                        setScriptPanelOpen(false);
+                        collapseFloatingUi();
+                      }}
+                      data-testid="button-open-library"
+                    >
+                      <Library className="mr-1.5 h-3.5 w-3.5" />
+                      讲解库
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        void handleSaveLecture();
+                        collapseFloatingUi();
+                      }}
+                      disabled={status === "preparing" || aiBusy}
+                      data-testid="button-save-lecture"
+                    >
+                      <Save className="mr-1.5 h-3.5 w-3.5" />
+                      保存
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        void handleCreateShare();
+                        collapseFloatingUi();
+                      }}
+                      disabled={status === "preparing" || aiBusy}
+                      data-testid="button-create-share"
+                    >
+                      <Share2 className="mr-1.5 h-3.5 w-3.5" />
+                      分享
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        void handleExportMp4();
+                        collapseFloatingUi();
+                      }}
+                      disabled={exportButtonDisabled}
+                      data-testid="button-export-mp4"
+                    >
+                      <Download className="mr-1.5 h-3.5 w-3.5" />
+                      {exportButtonLabel}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        handleLoadSample();
+                        collapseFloatingUi();
+                      }}
+                      data-testid="button-load-sample"
+                    >
+                      <FileText className="mr-1.5 h-3.5 w-3.5" />
+                      示例
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        handleClear();
+                        collapseFloatingUi();
+                      }}
+                      data-testid="button-clear"
+                    >
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                      清空
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
               {controlsOpen ? (
-                <div className="flex flex-col gap-2 rounded-xl border bg-background/95 p-2 shadow-2xl backdrop-blur">
+                <div
+                  className="absolute right-0 flex flex-col gap-2 rounded-xl border bg-background/95 p-2 shadow-2xl backdrop-blur"
+                  style={floatingControlsPanelStyle}
+                >
                   <Button
                     size="icon"
                     variant="ghost"
@@ -3425,15 +3964,13 @@ export default function WhiteboardPage() {
               ) : null}
               <Button
                 size="icon"
-                className="h-14 w-14 rounded-full shadow-2xl"
-                onClick={() => {
-                  if (controlsOpen) {
-                    collapseFloatingUi();
-                  } else {
-                    setControlsOpen(true);
-                  }
-                }}
-                title="打开控制"
+                className="h-14 w-14 touch-none rounded-full shadow-2xl cursor-grab active:cursor-grabbing"
+                onClick={handleFloatingControlClick}
+                onPointerDown={handleFloatingControlPointerDown}
+                onPointerMove={handleFloatingControlPointerMove}
+                onPointerUp={finishFloatingControlDrag}
+                onPointerCancel={finishFloatingControlDrag}
+                title="打开控制，可拖动"
                 data-testid="button-floating-controls"
               >
                 {controlsOpen ? <XCircle className="h-5 w-5" /> : <Play className="h-5 w-5" />}

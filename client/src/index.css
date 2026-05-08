@@ -5,7 +5,7 @@
 .whiteboard-math {
   display: inline-block;
   background: transparent;
-  font-family: "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-family: var(--whiteboard-hand-font);
   font-synthesis: none;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
@@ -15,6 +15,12 @@
   color: inherit;
   font-size: 1em;
   line-height: 1.2;
+}
+
+.whiteboard-math .katex,
+.whiteboard-math .katex * {
+  font-family: var(--whiteboard-hand-font) !important;
+  font-style: normal;
 }
 
 .whiteboard-math .katex-display {
@@ -32,8 +38,15 @@
   line-height: 1.35;
 }
 
+.whiteboard-handdraw line,
+.whiteboard-handdraw path,
+.whiteboard-handdraw polyline {
+  filter: url("#whiteboard-hand-line");
+}
+
 /* LIGHT MODE */
 :root {
+  --whiteboard-hand-font: "Kaiti SC", "STKaiti", "LXGW WenKai", "FZKai-Z03S", "KaiTi", "楷体", "Songti SC", "Noto Serif CJK SC", "PingFang SC", serif;
   --button-outline: rgba(0, 0, 0, 0.1);
   --badge-outline: rgba(0, 0, 0, 0.05);
   --opaque-button-border-intensity: -8;

@@ -1,0 +1,7 @@
+exports/
+squeeze-theorem-script.json
+dist/
+node_modules/
+.env
+.env.*
+*.log

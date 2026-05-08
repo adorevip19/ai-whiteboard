@@ -13,6 +13,7 @@
     "build:client": "vite build",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "install:skills": "node script/install-skills.mjs",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

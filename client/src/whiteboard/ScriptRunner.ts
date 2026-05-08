@@ -46,6 +46,48 @@ type PageRuntimeState = {
 
 const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
 
+function hexToRgb(color: string) {
+  const normalized = color.trim();
+  const short = normalized.match(/^#([0-9a-f]{3})$/i)?.[1];
+  if (short) {
+    return {
+      r: Number.parseInt(short[0] + short[0], 16),
+      g: Number.parseInt(short[1] + short[1], 16),
+      b: Number.parseInt(short[2] + short[2], 16),
+    };
+  }
+  const long = normalized.match(/^#([0-9a-f]{6})$/i)?.[1];
+  if (!long) return null;
+  return {
+    r: Number.parseInt(long.slice(0, 2), 16),
+    g: Number.parseInt(long.slice(2, 4), 16),
+    b: Number.parseInt(long.slice(4, 6), 16),
+  };
+}
+
+function relativeLuminance(color: string) {
+  const rgb = hexToRgb(color);
+  if (!rgb) return 0;
+  const channel = (value: number) => {
+    const normalized = value / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : Math.pow((normalized + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+}
+
+function readableStrokeColor(color: string | undefined, fallback = "#111111") {
+  if (!color) return fallback;
+  return relativeLuminance(color) > 0.62 ? fallback : color;
+}
+
+function readableGridColor(color: string | undefined) {
+  const fallback = "#cbd5e1";
+  if (!color) return fallback;
+  return relativeLuminance(color) > 0.78 ? fallback : color;
+}
+
 export class ScriptRunner {
   private script: WhiteboardScript;
   private cb: RunnerCallbacks;
@@ -175,6 +217,7 @@ export class ScriptRunner {
           cmd.type === "draw_line" ||
           cmd.type === "draw_arrow" ||
           cmd.type === "draw_path" ||
+          cmd.type === "draw_image" ||
           cmd.type === "draw_rectangle" ||
           cmd.type === "draw_triangle" ||
           cmd.type === "draw_circle" ||
@@ -469,8 +512,16 @@ export class ScriptRunner {
       .replace(/[{}\\_^]/g, "");
     return Math.max(
       fontSize * (displayMode ? 2.4 : 1.6),
-      Math.min(this.canvas.width, compact.length * fontSize * 0.58 + fontSize * 1.5),
+      Math.min(this.canvas.width, compact.length * fontSize * 0.68 + fontSize * 2.4),
     );
+  }
+
+  private estimateLatexHeight(latex: string, fontSize: number, displayMode = false) {
+    const hasTallOperators =
+      /\\(?:frac|dfrac|tfrac|sqrt|lim|sum|prod|int|begin|overline|widehat)\b/.test(latex) ||
+      /_[{\\]|\^{/.test(latex);
+    const base = displayMode ? 2.25 : 1.75;
+    return fontSize * (hasTallOperators ? Math.max(base, displayMode ? 2.7 : 2.35) : base);
   }
 
   private getElementBBox(el: RenderedElement): ElementBBox {
@@ -937,6 +988,9 @@ export class ScriptRunner {
     if (cmd.type === "draw_path") {
       return this.animatePath(cmd);
     }
+    if (cmd.type === "draw_image") {
+      return this.animateImage(cmd);
+    }
     if (cmd.type === "draw_rectangle") {
       return this.animateRectangle(cmd);
     }
@@ -1085,20 +1139,15 @@ export class ScriptRunner {
       const fontSize = cmd.fontSize;
       const lineGap = cmd.lineGap ?? fontSize * 1.65;
       const lines = this.wrapTextLines(cmd.text, fontSize, Math.max(20, rect.width - padding * 2));
-      const maxLines = Math.max(1, Math.floor((rect.height - padding * 2) / lineGap));
-      const visibleLineCount = Math.max(1, Math.min(lines.length, maxLines));
       const measuredWidth = Math.min(
         Math.max(20, rect.width - padding * 2),
-        Math.max(fontSize, ...lines.slice(0, visibleLineCount).map((line) => this.estimateTextWidth(line, fontSize))),
+        Math.max(fontSize, ...lines.map((line) => this.estimateTextWidth(line, fontSize))),
       );
       const textBbox = {
         x: rect.x + padding,
         y: rect.y + padding,
         width: measuredWidth,
-        height: Math.max(
-          fontSize,
-          Math.min(Math.max(fontSize, rect.height - padding * 2), fontSize * 1.2 + (visibleLineCount - 1) * lineGap),
-        ),
+        height: Math.max(fontSize, fontSize * 1.2 + (lines.length - 1) * lineGap),
       };
       const elIndex = this.elements.length;
       this.elements.push({
@@ -1355,7 +1404,7 @@ export class ScriptRunner {
         x: cmd.x,
         y: cmd.y,
         width: this.estimateLatexWidth(cmd.latex, cmd.fontSize, cmd.displayMode ?? false),
-        height: cmd.fontSize * (cmd.displayMode ? 1.9 : 1.45),
+        height: this.estimateLatexHeight(cmd.latex, cmd.fontSize, cmd.displayMode ?? false),
       };
       this.elements.push({
         kind: "math",
@@ -1398,7 +1447,15 @@ export class ScriptRunner {
     cmd: Extract<WhiteboardCommand, { type: "write_math_steps" }>,
   ) {
     return new Promise<void>((resolve) => {
-      const lineGap = cmd.lineGap ?? Math.round(cmd.fontSize * 1.65);
+      const estimatedLineHeight = Math.max(
+        ...cmd.steps.map((step) =>
+          this.estimateLatexHeight(step, cmd.fontSize, cmd.displayMode ?? false),
+        ),
+      );
+      const lineGap = Math.max(
+        cmd.lineGap ?? Math.round(cmd.fontSize * 1.65),
+        Math.ceil(estimatedLineHeight * 1.12),
+      );
       const maxWidth = Math.max(
         ...cmd.steps.map((step) =>
           this.estimateLatexWidth(step, cmd.fontSize, cmd.displayMode ?? false),
@@ -1520,8 +1577,8 @@ export class ScriptRunner {
         from: [cmd.from[0], cmd.from[1]],
         to: [cmd.to[0], cmd.to[1]],
         currentEnd: [cmd.from[0], cmd.from[1]], // start collapsed at origin
-        color: cmd.color ?? "#111111",
-        width: cmd.width ?? 2,
+        color: readableStrokeColor(cmd.color, "#111111"),
+        width: Math.max(cmd.width ?? 2.75, 2.5),
         bbox: {
           x: Math.min(cmd.from[0], cmd.to[0]),
           y: Math.min(cmd.from[1], cmd.to[1]),
@@ -1575,8 +1632,8 @@ export class ScriptRunner {
         from: [cmd.from[0], cmd.from[1]],
         to: [cmd.to[0], cmd.to[1]],
         currentEnd: [cmd.from[0], cmd.from[1]],
-        color: cmd.color ?? "#111111",
-        width: cmd.width ?? 2,
+        color: readableStrokeColor(cmd.color, "#111111"),
+        width: Math.max(cmd.width ?? 2.75, 2.5),
         headSize: cmd.headSize ?? Math.max((cmd.width ?? 2) * 4, 12),
         headAngle: cmd.headAngle ?? 28,
         bbox: {
@@ -1629,8 +1686,8 @@ export class ScriptRunner {
         id: cmd.id,
         points,
         currentPoints: [points[0]],
-        color: cmd.color ?? "#111111",
-        width: cmd.width ?? 2,
+        color: readableStrokeColor(cmd.color, "#111111"),
+        width: Math.max(cmd.width ?? 2.75, 2.5),
         bbox: {
           x: Math.min(...points.map(([x]) => x)),
           y: Math.min(...points.map(([, y]) => y)),
@@ -1773,6 +1830,53 @@ export class ScriptRunner {
       },
       cmd.duration,
     );
+  }
+
+  private animateImage(cmd: Extract<WhiteboardCommand, { type: "draw_image" }>) {
+    const element: Extract<RenderedElement, { kind: "image" }> = {
+      kind: "image",
+      id: cmd.id,
+      src: cmd.src,
+      x: cmd.x,
+      y: cmd.y,
+      width: cmd.width,
+      height: cmd.height,
+      opacity: cmd.opacity ?? 1,
+      radius: cmd.radius ?? 0,
+      progress: 0,
+      bbox: {
+        x: cmd.x,
+        y: cmd.y,
+        width: cmd.width,
+        height: cmd.height,
+      },
+    };
+    this.elements.push(element);
+    this.commit();
+
+    return new Promise<void>((resolve) => {
+      const duration = this.durationFor(cmd.duration);
+      const start = this.now();
+      const tick = () => {
+        if (this.cancelled) return resolve();
+        if (this.paused) {
+          this.currentRaf = requestAnimationFrame(tick);
+          return;
+        }
+        const target = this.elements.find((el) => el.id === cmd.id);
+        const t = Math.min((this.now() - start) / duration, 1);
+        if (target && target.kind === "image") {
+          target.progress = this.easeProgress(t, "easeOut");
+          this.commit();
+        }
+        if (t >= 1) {
+          resolve();
+        } else {
+          this.currentRaf = requestAnimationFrame(tick);
+        }
+      };
+      this.currentRaf = requestAnimationFrame(tick);
+    });
   }
 
   private animateTriangle(
@@ -1992,9 +2096,9 @@ export class ScriptRunner {
         yTicks: this.buildTicks(cmd.yMin, cmd.yMax, cmd.yTickStep),
         grid: cmd.grid ?? true,
         showLabels: cmd.showLabels ?? true,
-        axisColor: cmd.axisColor ?? "#111111",
-        gridColor: cmd.gridColor ?? "#e5e7eb",
-        labelColor: cmd.labelColor ?? "#475569",
+        axisColor: readableStrokeColor(cmd.axisColor, "#0f172a"),
+        gridColor: readableGridColor(cmd.gridColor),
+        labelColor: readableStrokeColor(cmd.labelColor, "#334155"),
         fontSize: cmd.fontSize ?? 14,
         progress: 0,
         bbox: {
@@ -2074,8 +2178,8 @@ export class ScriptRunner {
         id: cmd.id,
         coordinateSystemId: cmd.coordinateSystemId,
         pathD,
-        color: cmd.color ?? "#2563eb",
-        width: cmd.width ?? 3,
+        color: readableStrokeColor(cmd.color, "#0f172a"),
+        width: Math.max(cmd.width ?? 3.5, 3),
         progress: 0,
         clip: { x: cs.x, y: cs.y, width: cs.width, height: cs.height },
         bbox: { x: cs.x, y: cs.y, width: cs.width, height: cs.height },
@@ -2175,8 +2279,8 @@ export class ScriptRunner {
       coordinateSystemId: cmd.coordinateSystemId,
       from: this.mathToCanvas(cs, cmd.from[0], cmd.from[1]),
       to: this.mathToCanvas(cs, cmd.to[0], cmd.to[1]),
-      color: cmd.color ?? "#64748b",
-      width: cmd.width ?? 2,
+      color: readableStrokeColor(cmd.color, "#0f172a"),
+      width: Math.max(cmd.width ?? 3.25, 3),
       duration: cmd.duration,
       narration: cmd.narration,
     });
