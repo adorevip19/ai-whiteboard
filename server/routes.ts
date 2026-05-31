@@ -20,10 +20,7 @@ import {
   enhanceScriptWithIllustrations,
   suggestIllustrationSlots,
 } from "./illustratedScript";
-import type {
-  WhiteboardCommand,
-  WhiteboardScript,
-} from "../client/src/whiteboard/commandTypes";
+import type { WhiteboardScript } from "../client/src/whiteboard/commandTypes";
 import {
   applyBoardTheme,
   normalizeBoardTheme,
@@ -334,69 +331,6 @@ function getDescendantGroupIds(
     }
   }
   return ids;
-}
-
-function getCommandNarration(command: WhiteboardCommand) {
-  return "narration" in command && typeof command.narration === "string"
-    ? command.narration.trim()
-    : "";
-}
-
-function estimateTtsDurationMs(text: string) {
-  const chars = Array.from(text.trim());
-  if (chars.length === 0) return 0;
-
-  let cjk = 0;
-  let latin = 0;
-  let punctuation = 0;
-  for (const char of chars) {
-    const codePoint = char.codePointAt(0) ?? 0;
-    if (
-      (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff)
-    ) {
-      cjk += 1;
-    }
-    else if (/[A-Za-z0-9]/.test(char)) latin += 1;
-    else if (!/\s/.test(char)) punctuation += 1;
-  }
-
-  const baseMs = cjk * 260 + latin * 85 + punctuation * 180;
-  return Math.max(1200, Math.round(baseMs + 600));
-}
-
-function findTtsDurationMismatches(script: WhiteboardScript) {
-  return script.commands.flatMap((command, index) => {
-    const narration = getCommandNarration(command);
-    if (!narration || !("duration" in command) || typeof command.duration !== "number") {
-      return [];
-    }
-
-    const estimatedMs = estimateTtsDurationMs(narration);
-    if (estimatedMs <= 0) return [];
-
-    const scriptMs = command.duration;
-    const ratio = scriptMs / estimatedMs;
-    const absoluteDelta = Math.abs(scriptMs - estimatedMs);
-    const isClearlyTooLong = scriptMs > 6000 && ratio >= 4 && absoluteDelta >= 6000;
-    const isClearlyTooShort = estimatedMs > 6000 && ratio <= 0.25 && absoluteDelta >= 6000;
-    if (!isClearlyTooLong && !isClearlyTooShort) return [];
-
-    return [
-      {
-        commandIndex: index,
-        commandId: "id" in command && typeof command.id === "string" ? command.id : undefined,
-        commandType: command.type,
-        durationMs: Math.round(scriptMs),
-        estimatedTtsMs: estimatedMs,
-        narrationPreview:
-          narration.length > 40 ? `${narration.slice(0, 40)}...` : narration,
-        message: `第 ${index + 1} 条命令 (${command.type}) 的 duration=${Math.round(
-          scriptMs,
-        )}ms，与旁白估算时长约 ${estimatedMs}ms 差距过大。`,
-      },
-    ];
-  });
 }
 
 function composePromptFromRecognizedImage(params: {
@@ -954,16 +888,6 @@ export async function registerRoutes(
           message: "脚本预检未通过，请先修正脚本后再生成视频。",
           report: renderPreflight.report,
         });
-      }
-      if (ttsEnabled) {
-        const durationMismatches = findTtsDurationMismatches(renderPreflight.script);
-        if (durationMismatches.length > 0) {
-          return res.status(400).json({
-            message:
-              "脚本中部分命令的 duration 与旁白预计时长差距过大。请修改脚本 duration 或拆分旁白后重试。",
-            issues: durationMismatches,
-          });
-        }
       }
       const renderScript = applyCanvasAspect(
         applyBoardTheme(renderPreflight.script, boardTheme),

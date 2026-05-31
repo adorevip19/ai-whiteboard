@@ -223,8 +223,6 @@ const FLOATING_CONTROL_SIZE = 56;
 const FLOATING_CONTROL_MARGIN = 16;
 const STANDARD_PLAYBACK_SPEED = 1;
 const SHORT_VIDEO_PLAYBACK_SPEED = 1.25;
-const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
-const EXPORT_NARRATION_TAIL_PADDING_MS = 300;
 const SILENT_AUDIO_DATA_URI =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==";
 
@@ -253,14 +251,23 @@ function clampVoiceSpeed(speed: number) {
   return Math.max(0.5, Math.min(speed, 2));
 }
 
-function commandHasDuration(cmd: WhiteboardCommand): cmd is WhiteboardCommand & { duration: number } {
-  return "duration" in cmd && typeof cmd.duration === "number";
-}
-
 function waitForNextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
   });
+}
+
+function normalizeExportVisualTiming(command: WhiteboardCommand): WhiteboardCommand {
+  if (command.type === "write_text" || command.type === "write_text_segments") {
+    return { ...command, duration: Math.min(command.duration, 80) };
+  }
+  if (command.type === "write_paragraph") {
+    return { ...command, duration: Math.min(command.duration, 140) };
+  }
+  if (command.type === "write_math") {
+    return { ...command, duration: Math.min(command.duration, 100) };
+  }
+  return command;
 }
 
 function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
@@ -2613,28 +2620,14 @@ export default function WhiteboardPage() {
     audioBuffers: Map<string, ExportAudioBuffer>,
     playbackSpeed: number,
   ): WhiteboardScript => {
-    const normalizedSpeed = Math.max(0.5, Math.min(playbackSpeed, 2));
     return {
       ...sourceScript,
+      // Do not stretch visual command durations to match narration length.
+      // Text should appear promptly, then remain readable while ScriptRunner
+      // waits for the narration before moving to the next command.
       commands: sourceScript.commands
         .filter((command) => command.type !== "wait")
-        .map((command) => {
-          const narration = getNarrationFromCommand(command);
-          const audio = narration ? audioBuffers.get(narration) : undefined;
-          if (!audio || !commandHasDuration(command)) return command;
-          // ScriptRunner shortens visual durations by playback speed and the
-          // whiteboard animation multiplier. For exported videos we want the
-          // visual command itself to last at least as long as the actual spoken
-          // narration, otherwise iOS Safari makes the board feel ahead of voice.
-          const narrationSyncedDuration = Math.ceil(
-            audio.durationMs * WHITEBOARD_ANIMATION_SPEED_MULTIPLIER +
-              EXPORT_NARRATION_TAIL_PADDING_MS * normalizedSpeed,
-          );
-          return {
-            ...command,
-            duration: Math.max(command.duration, narrationSyncedDuration),
-          } as WhiteboardCommand;
-        }),
+        .map(normalizeExportVisualTiming),
     };
   };
 
