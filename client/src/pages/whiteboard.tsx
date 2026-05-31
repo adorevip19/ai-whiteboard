@@ -29,6 +29,7 @@ import {
   Save,
   Send,
   Share2,
+  Smartphone,
   Sparkles,
   SkipBack,
   SkipForward,
@@ -54,6 +55,13 @@ import {
   type WhiteboardScript,
 } from "@/whiteboard/commandTypes";
 import { sampleScriptString, sampleScript } from "@/whiteboard/sampleScript";
+import {
+  boardFramePulseColor,
+  boardInkColor,
+  defaultCanvasBackground,
+  type BoardTheme,
+} from "@/whiteboard/theme";
+import { normalizeCanvasAspect, type CanvasAspect } from "@/whiteboard/canvasAspect";
 
 type RunStatus = "idle" | "preparing" | "running" | "done" | "error";
 type AiStatus =
@@ -213,6 +221,8 @@ const VIDEO_RECORDING_SEGMENT_MS = 45_000;
 const SVG_FRAME_RENDER_TIMEOUT_MS = 2500;
 const FLOATING_CONTROL_SIZE = 56;
 const FLOATING_CONTROL_MARGIN = 16;
+const STANDARD_PLAYBACK_SPEED = 1;
+const SHORT_VIDEO_PLAYBACK_SPEED = 1.25;
 const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
 const EXPORT_NARRATION_TAIL_PADDING_MS = 300;
 const SILENT_AUDIO_DATA_URI =
@@ -564,11 +574,13 @@ export default function WhiteboardPage() {
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [activeCommands, setActiveCommands] = useState<WhiteboardCommand[]>([]);
   const [narration, setNarration] = useState<string | null>(null);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [playbackSpeed, setPlaybackSpeed] = useState(STANDARD_PLAYBACK_SPEED);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [ttsStatus, setTtsStatus] = useState<string>("TTS 待生成");
   const [waitState, setWaitState] = useState<WaitState | null>(null);
   const [aiPrompt, setAiPrompt] = useState("");
+  const [boardTheme, setBoardTheme] = useState<BoardTheme>("light");
+  const [canvasAspect, setCanvasAspect] = useState<CanvasAspect>("landscape");
   const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
   const [aiMessage, setAiMessage] = useState("");
   const [aiExplanation, setAiExplanation] = useState("");
@@ -598,6 +610,8 @@ export default function WhiteboardPage() {
   const stepTotalRef = useRef(0);
   const playbackSpeedRef = useRef(playbackSpeed);
   const ttsEnabledRef = useRef(ttsEnabled);
+  const boardThemeRef = useRef<BoardTheme>(boardTheme);
+  const canvasAspectRef = useRef<CanvasAspect>(canvasAspect);
   const ttsRequestIdRef = useRef(0);
   const ttsCacheRef = useRef<Map<string, CachedTtsAudio>>(new Map());
   const ttsPrefetchControllerRef = useRef<AbortController | null>(null);
@@ -785,6 +799,14 @@ export default function WhiteboardPage() {
     if (!ttsEnabled) setTtsStatus("TTS 未开启");
     else setTtsStatus((current) => (current === "TTS 未开启" ? "TTS 待生成" : current));
   }, [ttsEnabled]);
+
+  useEffect(() => {
+    boardThemeRef.current = boardTheme;
+  }, [boardTheme]);
+
+  useEffect(() => {
+    canvasAspectRef.current = canvasAspect;
+  }, [canvasAspect]);
 
   const pausePlayback = () => {
     runnerRef.current?.pause();
@@ -1056,7 +1078,7 @@ export default function WhiteboardPage() {
         const response = await fetch("/api/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, rate: 1 }),
+          body: JSON.stringify({ text, rate: STANDARD_PLAYBACK_SPEED }),
           signal,
         });
         if (!response.ok) {
@@ -1921,6 +1943,8 @@ export default function WhiteboardPage() {
         {
           prompt,
           mode: explanationMode,
+          boardTheme: boardThemeRef.current,
+          canvasAspect: canvasAspectRef.current,
           sourceImageDataUrl,
           sourceImageSize,
           imageAnchors,
@@ -2363,7 +2387,12 @@ export default function WhiteboardPage() {
       }, 900);
       const result = await callAiEndpoint<AiScriptResponse>(
         "/api/ai-script/generate",
-        { prompt: knowledgeSummary.followUpPrompt, mode: "detailed" },
+        {
+          prompt: knowledgeSummary.followUpPrompt,
+          mode: "detailed",
+          boardTheme: boardThemeRef.current,
+          canvasAspect: canvasAspectRef.current,
+        },
         controller.signal,
       );
       if (controller.signal.aborted || topicGenerationIdRef.current !== generationId) return;
@@ -2480,13 +2509,14 @@ export default function WhiteboardPage() {
     context: CanvasRenderingContext2D,
     width: number,
     height: number,
+    canvasConfig: CanvasConfig = canvas,
   ) => {
     const clone = svg.cloneNode(true) as SVGSVGElement;
     clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     clone.setAttribute("width", String(width));
     clone.setAttribute("height", String(height));
     clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    clone.style.background = canvas.background;
+    clone.style.background = canvasConfig.background;
     clone.querySelectorAll("foreignObject").forEach((foreignObject) => {
       const x = Number(foreignObject.getAttribute("x") ?? 0);
       const y = Number(foreignObject.getAttribute("y") ?? 0);
@@ -2508,7 +2538,7 @@ export default function WhiteboardPage() {
         : [foreignObject.textContent?.replace(/\s+/g, " ").trim() ?? ""].filter(Boolean);
       const styleSource = (mathNodes[0] ?? htmlDivs[0] ?? foreignObject.querySelector("div")) as HTMLElement | null;
       const fontSize = Number.parseFloat(styleSource?.style.fontSize ?? "") || 32;
-      const color = styleSource?.style.color || "#111111";
+      const color = styleSource?.style.color || boardInkColor(canvasConfig);
       const lineGap = fontSize * 1.45;
 
       if (mathNodes.length > 0) {
@@ -2549,7 +2579,7 @@ export default function WhiteboardPage() {
         SVG_FRAME_RENDER_TIMEOUT_MS,
         "白板帧渲染超时。",
       );
-      context.fillStyle = canvas.background;
+      context.fillStyle = canvasConfig.background;
       context.fillRect(0, 0, width, height);
       context.drawImage(image, 0, 0, width, height);
     } finally {
@@ -2650,7 +2680,9 @@ export default function WhiteboardPage() {
     text: string,
     tts = ttsEnabledRef.current,
     speed = playbackSpeedRef.current,
-  ) => JSON.stringify({ text, tts, speed: Number(speed.toFixed(2)) });
+    theme = boardThemeRef.current,
+    aspect = canvasAspectRef.current,
+  ) => JSON.stringify({ text, tts, speed: Number(speed.toFixed(2)), theme, aspect });
 
   const resetPreparedVideo = (message = "") => {
     videoRenderControllerRef.current?.abort();
@@ -2672,6 +2704,8 @@ export default function WhiteboardPage() {
         scriptText: text,
         ttsEnabled: ttsEnabledRef.current,
         playbackSpeed: playbackSpeedRef.current,
+        boardTheme: boardThemeRef.current,
+        canvasAspect: canvasAspectRef.current,
       }),
       signal,
     });
@@ -2870,7 +2904,7 @@ export default function WhiteboardPage() {
         framePulse = !framePulse;
         context.save();
         context.globalAlpha = 1;
-        context.fillStyle = framePulse ? "#ffffff" : "#f2f2f2";
+        context.fillStyle = framePulse ? canvas.background : boardFramePulseColor(exportScript.canvas);
         context.fillRect(recordingCanvas.width - 4, recordingCanvas.height - 4, 4, 4);
         context.restore();
         videoTrack.requestFrame?.();
@@ -2903,6 +2937,7 @@ export default function WhiteboardPage() {
           context,
           exportScript.canvas.width,
           exportScript.canvas.height,
+          exportScript.canvas,
         )
           .catch(() => undefined)
           .finally(() => {
@@ -2917,6 +2952,7 @@ export default function WhiteboardPage() {
         context,
         exportScript.canvas.width,
         exportScript.canvas.height,
+        exportScript.canvas,
       );
       requestVideoFrame();
 
@@ -3002,7 +3038,7 @@ export default function WhiteboardPage() {
     if (preparedVideoKeyRef.current !== getVideoRenderKey(scriptText)) {
       resetPreparedVideo("");
     }
-  }, [scriptText, ttsEnabled, playbackSpeed, videoRenderStatus]);
+  }, [scriptText, ttsEnabled, playbackSpeed, boardTheme, canvasAspect, videoRenderStatus]);
 
   useEffect(() => {
     window.aiWhiteboardRecordScript = async ({ scriptText, uploadUrl, ttsEnabled, playbackSpeed }) => {
@@ -3265,13 +3301,35 @@ export default function WhiteboardPage() {
                 max={1.5}
                 step={0.05}
                 disabled={status === "running" || status === "preparing"}
-                onValueChange={(value) => setPlaybackSpeed(value[0] ?? 1)}
+                onValueChange={(value) => setPlaybackSpeed(value[0] ?? STANDARD_PLAYBACK_SPEED)}
                 className="flex-1"
                 data-testid="slider-playback-speed"
               />
               <span className="w-12 text-right font-mono text-xs text-muted-foreground">
                 {playbackSpeed.toFixed(2)}x
               </span>
+              <Button
+                type="button"
+                size="sm"
+                variant={playbackSpeed === STANDARD_PLAYBACK_SPEED ? "secondary" : "outline"}
+                disabled={status === "running" || status === "preparing"}
+                onClick={() => setPlaybackSpeed(STANDARD_PLAYBACK_SPEED)}
+                className="h-7 px-2 text-xs"
+                data-testid="button-speed-standard"
+              >
+                标准
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={playbackSpeed === SHORT_VIDEO_PLAYBACK_SPEED ? "secondary" : "outline"}
+                disabled={status === "running" || status === "preparing"}
+                onClick={() => setPlaybackSpeed(SHORT_VIDEO_PLAYBACK_SPEED)}
+                className="h-7 px-2 text-xs"
+                data-testid="button-speed-short-video"
+              >
+                短视频
+              </Button>
             </div>
             <div className="flex items-center gap-3">
               <Volume2 className="h-4 w-4 text-muted-foreground" />
@@ -3283,6 +3341,45 @@ export default function WhiteboardPage() {
               />
               <span className="truncate text-xs text-muted-foreground" title={ttsStatus}>
                 {ttsStatus}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Square className="h-4 w-4 text-muted-foreground" />
+              <div className="min-w-[64px] text-xs font-medium">黑色白板</div>
+              <Switch
+                checked={boardTheme === "dark"}
+                onCheckedChange={(checked) => {
+                  const nextTheme = checked ? "dark" : "light";
+                  setBoardTheme(nextTheme);
+                  boardThemeRef.current = nextTheme;
+                  resetPreparedVideo("");
+                  setCanvas((current) => ({
+                    ...current,
+                    theme: nextTheme,
+                    background: defaultCanvasBackground(nextTheme),
+                  }));
+                }}
+                data-testid="switch-board-theme"
+              />
+              <span className="truncate text-xs text-muted-foreground">
+                {boardTheme === "dark" ? "生成黑底反色脚本" : "生成白底脚本"}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Smartphone className="h-4 w-4 text-muted-foreground" />
+              <div className="min-w-[64px] text-xs font-medium">9:16 竖屏</div>
+              <Switch
+                checked={canvasAspect === "portrait"}
+                onCheckedChange={(checked) => {
+                  const nextAspect = normalizeCanvasAspect(checked ? "portrait" : "landscape");
+                  setCanvasAspect(nextAspect);
+                  canvasAspectRef.current = nextAspect;
+                  resetPreparedVideo("");
+                }}
+                data-testid="switch-canvas-aspect"
+              />
+              <span className="truncate text-xs text-muted-foreground">
+                {canvasAspect === "portrait" ? "手机短视频画面" : "横版白板画面"}
               </span>
             </div>
             {waitState ? (

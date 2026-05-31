@@ -14,6 +14,12 @@ import {
   expandConstructGeometryCommand,
   warmupJsxGraphGeometryEngine,
 } from "./geometryEngine";
+import {
+  boardGridColor,
+  boardInkColor,
+  boardMutedInkColor,
+  readableBoardColor,
+} from "./theme";
 
 export interface RunnerCallbacks {
   onCanvasChange: (canvas: CanvasConfig) => void;
@@ -45,48 +51,6 @@ type PageRuntimeState = {
 };
 
 const WHITEBOARD_ANIMATION_SPEED_MULTIPLIER = 1.15;
-
-function hexToRgb(color: string) {
-  const normalized = color.trim();
-  const short = normalized.match(/^#([0-9a-f]{3})$/i)?.[1];
-  if (short) {
-    return {
-      r: Number.parseInt(short[0] + short[0], 16),
-      g: Number.parseInt(short[1] + short[1], 16),
-      b: Number.parseInt(short[2] + short[2], 16),
-    };
-  }
-  const long = normalized.match(/^#([0-9a-f]{6})$/i)?.[1];
-  if (!long) return null;
-  return {
-    r: Number.parseInt(long.slice(0, 2), 16),
-    g: Number.parseInt(long.slice(2, 4), 16),
-    b: Number.parseInt(long.slice(4, 6), 16),
-  };
-}
-
-function relativeLuminance(color: string) {
-  const rgb = hexToRgb(color);
-  if (!rgb) return 0;
-  const channel = (value: number) => {
-    const normalized = value / 255;
-    return normalized <= 0.03928
-      ? normalized / 12.92
-      : Math.pow((normalized + 0.055) / 1.055, 2.4);
-  };
-  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
-}
-
-function readableStrokeColor(color: string | undefined, fallback = "#111111") {
-  if (!color) return fallback;
-  return relativeLuminance(color) > 0.62 ? fallback : color;
-}
-
-function readableGridColor(color: string | undefined) {
-  const fallback = "#cbd5e1";
-  if (!color) return fallback;
-  return relativeLuminance(color) > 0.78 ? fallback : color;
-}
 
 export class ScriptRunner {
   private script: WhiteboardScript;
@@ -1161,7 +1125,7 @@ export class ScriptRunner {
         height: rect.height,
         fontSize,
         lineGap,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         padding,
         bbox: textBbox,
       });
@@ -1267,7 +1231,7 @@ export class ScriptRunner {
         x: cmd.x,
         y: cmd.y,
         fontSize: cmd.fontSize,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         fontWeight: cmd.bold ? 700 : undefined,
         bbox: {
           x: cmd.x,
@@ -1327,7 +1291,7 @@ export class ScriptRunner {
         x: cmd.x,
         y: cmd.y,
         fontSize: cmd.fontSize,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         segments: cmd.segments.map((segment) => ({
           id: segment.id,
           text: segment.text,
@@ -1335,7 +1299,7 @@ export class ScriptRunner {
           x: cmd.x,
           y: cmd.y,
           fontSize: segment.fontSize ?? cmd.fontSize,
-          color: segment.color ?? cmd.color ?? "#111111",
+          color: readableBoardColor(segment.color ?? cmd.color, this.canvas, boardInkColor(this.canvas)),
           fontWeight: segment.bold ? 700 : undefined,
           bbox: {
             x: cmd.x,
@@ -1413,7 +1377,7 @@ export class ScriptRunner {
         x: cmd.x,
         y: cmd.y,
         fontSize: cmd.fontSize,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         displayMode: cmd.displayMode ?? false,
         bbox,
         opacity: 0,
@@ -1471,7 +1435,7 @@ export class ScriptRunner {
         y: cmd.y,
         fontSize: cmd.fontSize,
         lineGap,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         displayMode: cmd.displayMode ?? false,
         bbox: {
           x: cmd.x,
@@ -1529,7 +1493,7 @@ export class ScriptRunner {
         x: cmd.x,
         y: cmd.y,
         fontSize: cmd.fontSize,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         stage: 0,
         bbox: {
           x: cmd.x,
@@ -1577,7 +1541,7 @@ export class ScriptRunner {
         from: [cmd.from[0], cmd.from[1]],
         to: [cmd.to[0], cmd.to[1]],
         currentEnd: [cmd.from[0], cmd.from[1]], // start collapsed at origin
-        color: readableStrokeColor(cmd.color, "#111111"),
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: Math.max(cmd.width ?? 2.75, 2.5),
         bbox: {
           x: Math.min(cmd.from[0], cmd.to[0]),
@@ -1632,7 +1596,7 @@ export class ScriptRunner {
         from: [cmd.from[0], cmd.from[1]],
         to: [cmd.to[0], cmd.to[1]],
         currentEnd: [cmd.from[0], cmd.from[1]],
-        color: readableStrokeColor(cmd.color, "#111111"),
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: Math.max(cmd.width ?? 2.75, 2.5),
         headSize: cmd.headSize ?? Math.max((cmd.width ?? 2) * 4, 12),
         headAngle: cmd.headAngle ?? 28,
@@ -1686,7 +1650,7 @@ export class ScriptRunner {
         id: cmd.id,
         points,
         currentPoints: [points[0]],
-        color: readableStrokeColor(cmd.color, "#111111"),
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: Math.max(cmd.width ?? 2.75, 2.5),
         bbox: {
           x: Math.min(...points.map(([x]) => x)),
@@ -1816,7 +1780,7 @@ export class ScriptRunner {
         id: cmd.id,
         shapeType: "rectangle",
         pathD: this.rectanglePath(cmd.x, cmd.y, cmd.width, cmd.height, cmd.radius ?? 0),
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: strokeWidth,
         fill: cmd.fill,
         fillOpacity: cmd.fillOpacity ?? 0.12,
@@ -1891,7 +1855,7 @@ export class ScriptRunner {
         id: cmd.id,
         shapeType: "triangle",
         pathD,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: strokeWidth,
         fill: cmd.fill,
         fillOpacity: cmd.fillOpacity ?? 0.12,
@@ -1910,7 +1874,7 @@ export class ScriptRunner {
         id: cmd.id,
         shapeType: "circle",
         pathD: this.circlePath(cmd.cx, cmd.cy, cmd.radius),
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: strokeWidth,
         fill: cmd.fill,
         fillOpacity: cmd.fillOpacity ?? 0.12,
@@ -1939,7 +1903,7 @@ export class ScriptRunner {
       id: cmd.id,
       shapeType: "arc_arrow",
       pathD: this.arcPath(cmd.cx, cmd.cy, cmd.radius, cmd.startAngle, sweep),
-      color: cmd.color ?? "#111111",
+      color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
       width,
       progress: 0,
       bbox: {
@@ -1995,7 +1959,7 @@ export class ScriptRunner {
       id: cmd.id,
       shapeType: "brace",
       pathD: this.bracePath(cmd.from, cmd.to, cmd.orientation, depth),
-      color: cmd.color ?? "#111111",
+      color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
       width: cmd.width ?? 3,
       progress: 0,
       bbox,
@@ -2096,9 +2060,9 @@ export class ScriptRunner {
         yTicks: this.buildTicks(cmd.yMin, cmd.yMax, cmd.yTickStep),
         grid: cmd.grid ?? true,
         showLabels: cmd.showLabels ?? true,
-        axisColor: readableStrokeColor(cmd.axisColor, "#0f172a"),
-        gridColor: readableGridColor(cmd.gridColor),
-        labelColor: readableStrokeColor(cmd.labelColor, "#334155"),
+        axisColor: readableBoardColor(cmd.axisColor, this.canvas, boardInkColor(this.canvas)),
+        gridColor: readableBoardColor(cmd.gridColor, this.canvas, boardGridColor(this.canvas)),
+        labelColor: readableBoardColor(cmd.labelColor, this.canvas, boardMutedInkColor(this.canvas)),
         fontSize: cmd.fontSize ?? 14,
         progress: 0,
         bbox: {
@@ -2178,7 +2142,7 @@ export class ScriptRunner {
         id: cmd.id,
         coordinateSystemId: cmd.coordinateSystemId,
         pathD,
-        color: readableStrokeColor(cmd.color, "#0f172a"),
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         width: Math.max(cmd.width ?? 3.5, 3),
         progress: 0,
         clip: { x: cs.x, y: cs.y, width: cs.width, height: cs.height },
@@ -2279,7 +2243,7 @@ export class ScriptRunner {
       coordinateSystemId: cmd.coordinateSystemId,
       from: this.mathToCanvas(cs, cmd.from[0], cmd.from[1]),
       to: this.mathToCanvas(cs, cmd.to[0], cmd.to[1]),
-      color: readableStrokeColor(cmd.color, "#0f172a"),
+      color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
       width: Math.max(cmd.width ?? 3.25, 3),
       duration: cmd.duration,
       narration: cmd.narration,
@@ -2300,7 +2264,7 @@ export class ScriptRunner {
         y: cmd.y,
         label: cmd.label,
         labelPosition,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         radius,
         fontSize,
         progress: 0,
@@ -2339,7 +2303,7 @@ export class ScriptRunner {
       id: cmd.id,
       from: cmd.from,
       to: cmd.to,
-      color: cmd.color ?? "#111111",
+      color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
       width: cmd.width ?? 2,
       duration: cmd.duration,
       narration: cmd.narration,
@@ -2353,7 +2317,7 @@ export class ScriptRunner {
         x,
         y,
         fontSize: 16,
-        color: cmd.color ?? "#111111",
+        color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
         duration: 180,
       });
     }
@@ -2369,7 +2333,7 @@ export class ScriptRunner {
       id: cmd.id,
       from: cmd.from,
       to,
-      color: cmd.color ?? "#111111",
+      color: readableBoardColor(cmd.color, this.canvas, boardInkColor(this.canvas)),
       width: cmd.width ?? 2,
       headSize: Math.max((cmd.width ?? 2) * 4, 10),
       headAngle: 26,

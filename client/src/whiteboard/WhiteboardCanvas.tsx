@@ -13,6 +13,7 @@ import {
 } from "./fonts";
 import { MathRenderer } from "./MathRenderer";
 import { cn } from "@/lib/utils";
+import { isDarkCanvas } from "./theme";
 
 interface Props {
   canvas: CanvasConfig;
@@ -70,6 +71,34 @@ export function WhiteboardCanvas({
 
   const displayW = canvas.width * scale;
   const displayH = canvas.height * scale;
+  const darkBoard = isDarkCanvas(canvas);
+  const revisionColors = darkBoard
+    ? {
+        beforeFill: "#1c1917",
+        beforeStroke: "#7c2d12",
+        beforeTitle: "#fdba74",
+        afterFill: "#052e16",
+        afterStroke: "#166534",
+        afterTitle: "#86efac",
+        arrow: "#cbd5e1",
+        text: "#f8fafc",
+        noteFill: "#0f172a",
+        noteStroke: "#334155",
+        noteText: "#cbd5e1",
+      }
+    : {
+        beforeFill: "#fff7ed",
+        beforeStroke: "#fed7aa",
+        beforeTitle: "#c2410c",
+        afterFill: "#f0fdf4",
+        afterStroke: "#bbf7d0",
+        afterTitle: "#15803d",
+        arrow: "#64748b",
+        text: "#111827",
+        noteFill: "#f8fafc",
+        noteStroke: "#d8e0ea",
+        noteText: "#334155",
+      };
   const elementTransform = (el: RenderedElement) =>
     el.transform
       ? `translate(${el.transform.translateX} ${el.transform.translateY})`
@@ -151,24 +180,24 @@ export function WhiteboardCanvas({
             const maxCardLines = Math.max(1, Math.floor((bodyH - 72) / lineGap));
             return (
               <g key={el.id} transform={transform} opacity={el.progress} data-testid={`revision-compare-${el.id}`}>
-                <rect x={leftX} y={el.y} width={cardW} height={bodyH} rx={8} fill="#fff7ed" stroke="#fed7aa" strokeWidth={1.5} />
-                <rect x={rightX} y={el.y} width={cardW} height={bodyH} rx={8} fill="#f0fdf4" stroke="#bbf7d0" strokeWidth={1.5} />
-                <text x={leftX + 18} y={el.y + 34} fill="#c2410c" fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.beforeTitle}</text>
-                <text x={rightX + 18} y={el.y + 34} fill="#15803d" fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.afterTitle}</text>
-                <line x1={leftX + cardW + 8} y1={arrowY} x2={rightX - 8} y2={arrowY} stroke="#64748b" strokeWidth={2.5} strokeLinecap="round" />
-                <polyline points={`${rightX - 18},${arrowY - 8} ${rightX - 8},${arrowY} ${rightX - 18},${arrowY + 8}`} fill="none" stroke="#64748b" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
+                <rect x={leftX} y={el.y} width={cardW} height={bodyH} rx={8} fill={revisionColors.beforeFill} stroke={revisionColors.beforeStroke} strokeWidth={1.5} />
+                <rect x={rightX} y={el.y} width={cardW} height={bodyH} rx={8} fill={revisionColors.afterFill} stroke={revisionColors.afterStroke} strokeWidth={1.5} />
+                <text x={leftX + 18} y={el.y + 34} fill={revisionColors.beforeTitle} fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.beforeTitle}</text>
+                <text x={rightX + 18} y={el.y + 34} fill={revisionColors.afterTitle} fontSize={17} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{el.afterTitle}</text>
+                <line x1={leftX + cardW + 8} y1={arrowY} x2={rightX - 8} y2={arrowY} stroke={revisionColors.arrow} strokeWidth={2.5} strokeLinecap="round" />
+                <polyline points={`${rightX - 18},${arrowY - 8} ${rightX - 8},${arrowY} ${rightX - 18},${arrowY + 8}`} fill="none" stroke={revisionColors.arrow} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
                 {visibleBefore.slice(0, maxCardLines).map((line, index) => (
-                  <text key={`${el.id}-before-${index}`} x={leftX + 22} y={el.y + 78 + index * lineGap} fill="#111827" fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                  <text key={`${el.id}-before-${index}`} x={leftX + 22} y={el.y + 78 + index * lineGap} fill={revisionColors.text} fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
                 ))}
                 {visibleAfter.slice(0, maxCardLines).map((line, index) => (
-                  <text key={`${el.id}-after-${index}`} x={rightX + 22} y={el.y + 78 + index * lineGap} fill="#111827" fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                  <text key={`${el.id}-after-${index}`} x={rightX + 22} y={el.y + 78 + index * lineGap} fill={revisionColors.text} fontSize={el.fontSize} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
                 ))}
                 {el.note ? (
                   <g>
-                    <rect x={el.x} y={noteY} width={el.width} height={noteH} rx={8} fill="#f8fafc" stroke="#d8e0ea" strokeWidth={1.5} />
-                    <text x={el.x + 18} y={noteY + 28} fill="#334155" fontSize={16} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>点评</text>
+                    <rect x={el.x} y={noteY} width={el.width} height={noteH} rx={8} fill={revisionColors.noteFill} stroke={revisionColors.noteStroke} strokeWidth={1.5} />
+                    <text x={el.x + 18} y={noteY + 28} fill={revisionColors.noteText} fontSize={16} fontWeight={700} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>点评</text>
                     {visibleNote.slice(0, 2).map((line, index) => (
-                      <text key={`${el.id}-note-${index}`} x={el.x + 72} y={noteY + 30 + index * 26} fill="#334155" fontSize={Math.max(20, el.fontSize - 4)} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
+                      <text key={`${el.id}-note-${index}`} x={el.x + 72} y={noteY + 30 + index * 26} fill={revisionColors.noteText} fontSize={Math.max(20, el.fontSize - 4)} fontFamily={WHITEBOARD_TEXT_FONT_FAMILY}>{line}</text>
                     ))}
                   </g>
                 ) : null}

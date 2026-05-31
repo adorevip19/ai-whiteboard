@@ -61,7 +61,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
   "imageDataUrl": "data:image/png;base64,...",
   "mode": "detailed",
   "ttsEnabled": true,
-  "playbackSpeed": 1
+  "playbackSpeed": 1,
+  "boardTheme": "light"
 }
 ```
 
@@ -72,6 +73,7 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 - `mode`：可选，`"detailed"` 或 `"concise"`，默认 `"detailed"`。
 - `ttsEnabled`：可选，默认 `true`。设为 `true` 时会生成有声视频，要求后端已配置 Azure TTS。
 - `playbackSpeed`：可选，范围 `0.5` 到 `2`，默认 `1`。
+- `boardTheme`：可选，`"light"` 或 `"dark"`，默认 `"light"`。设为 `"dark"` 时生成黑色白板：服务端会把画布背景改为黑色，并反转/修正文字、公式、线条、坐标轴、几何图和标注颜色以适配黑底。
 
 要求：
 
@@ -89,7 +91,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
     "canvas": {
       "width": 1200,
       "height": 800,
-      "background": "#ffffff"
+      "background": "#ffffff",
+      "theme": "light"
     },
     "commands": [
       {
@@ -105,7 +108,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
     ]
   },
   "ttsEnabled": true,
-  "playbackSpeed": 1
+  "playbackSpeed": 1,
+  "boardTheme": "dark"
 }
 ```
 
@@ -124,6 +128,7 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 - `scriptText`：可选。白板脚本 JSON 字符串。
 - `ttsEnabled`：可选，默认 `true`。如果脚本包含 `narration` 且希望输出有声视频，设为 `true`。
 - `playbackSpeed`：可选，范围 `0.5` 到 `2`，默认 `1`。
+- `boardTheme`：可选，`"light"` 或 `"dark"`，默认 `"light"`。即使传入的是白底脚本，`"dark"` 也会在渲染前生成黑底反色版本；原脚本文本不会被持久改写。
 
 要求：
 
@@ -142,6 +147,110 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 - 如果脚本内容、`ttsEnabled` 或 `playbackSpeed` 变化，旧的预渲染视频会失效，需要重新生成讲解后再预渲染。
 
 注意：这是网页客户端的体验优化，不改变 `/api/video/render` 的 HTTP 协议。外部 AI 或服务端调用该接口时，仍然是一次请求返回一个 MP4。
+
+## 插图增强测试版
+
+插图增强不调用任何生图 API，也不要求 OpenAI 或其他图片 API Key。它只接收已经准备好的本地图片或图片 data URL，把图片作为独立“视觉讲解页”插入现有白板脚本，再交给原 `/api/video/render` 渲染。
+
+### 分析适合插图的位置
+
+```http
+POST /api/ai-script/illustration-slots
+```
+
+请求：
+
+```json
+{
+  "scriptText": "{...}",
+  "maxSlots": 6
+}
+```
+
+返回：
+
+```json
+{
+  "suggestions": [
+    {
+      "pageId": "p2",
+      "title": "混凝土里面有什么",
+      "score": 0.92,
+      "reason": "包含具体结构或内部组成，插图能降低理解成本。",
+      "keywords": ["内部", "骨料", "水泥浆"]
+    }
+  ]
+}
+```
+
+### 应用已准备好的插图
+
+```http
+POST /api/ai-script/apply-illustrations
+```
+
+请求：
+
+```json
+{
+  "scriptText": "{...}",
+  "illustrations": [
+    {
+      "id": "concrete_cross_section",
+      "title": "混凝土内部结构",
+      "caption": "骨料像骨架，水泥浆像胶水，把石粒黏成坚硬整体。",
+      "narration": "先看这张剖面图，混凝土不是一整块均匀的灰色材料，里面有许多骨料，水泥浆把它们黏在一起。",
+      "pageId": "p2",
+      "keywords": ["内部", "骨料", "水泥浆"],
+      "dataUrl": "data:image/png;base64,..."
+    }
+  ]
+}
+```
+
+返回增强后的 `scriptText`、预检 `report`、已插入清单 `inserted` 和跳过清单 `skipped`。
+
+本地 Codex 工作流也可以用命令行把图片文件写入脚本：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --assets /tmp/job/illustrations.json \
+  --out /tmp/job/script_illustrated.json
+```
+
+如果用户只是给了插图文件，也可以不写 manifest，直接传图片路径：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --image /tmp/job/assets/concrete_cross_section.png \
+  --image /tmp/job/assets/mixer_truck.jpg \
+  --out /tmp/job/script_illustrated.json
+```
+
+需要显式指定标题、说明、关键词或目标页面时，使用 `--asset`，格式为 `路径|标题|说明|关键词1,关键词2|pageId`：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --asset "/tmp/job/assets/dam.png|水库大坝|混凝土大坝靠自身重量抵抗水压|水库,大坝,水压|p8" \
+  --out /tmp/job/script_illustrated.json
+```
+
+其中 `illustrations.json` 可以使用图片文件路径，脚本会自动转成 data URL：
+
+```json
+[
+  {
+    "id": "mixer_truck",
+    "title": "搅拌车运输新拌混凝土",
+    "caption": "圆筒慢慢转动，帮助新拌混凝土暂时保持柔软。",
+    "path": "/tmp/job/assets/mixer_truck.png",
+    "keywords": ["搅拌车", "运输", "凝固"]
+  }
+]
+```
 
 ## TTS 中断重试
 

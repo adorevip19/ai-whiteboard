@@ -35,15 +35,55 @@ npm run check
 
 1. Create a stable output directory under `/tmp`, for example `/tmp/ai-whiteboard-video-YYYYMMDD-HHMMSS`.
 2. Copy uploaded images out of temporary Photos paths before processing.
+   - If the user provides supplementary illustrations for a text/article/EPUB lecture, copy them too and treat them as optional teaching assets, not as problem images to recognize.
 3. Decide the entry mode:
    - For single image: produce one script and one MP4.
    - For multiple images: produce `00_intro.mp4`, one numbered MP4 per image, `99_outro.mp4`, then concatenate.
    - For text topic: produce a script from the user's topic and preferred explanation.
+   - For text/article/EPUB plus supplementary illustrations: produce the normal script first, then apply the illustration enhancement workflow below before rendering.
 4. Build or obtain a valid ai-whiteboard JSON script.
-5. Render with `scripts/render_whiteboard_mp4.mjs`.
-6. Extract frames with ffmpeg and inspect at least early/middle/final frames.
-7. If content is wrong, labels are cut off, formulas are confusing, or laser marks cover text, repair the script and rerender.
-8. Copy the final MP4 to a user-friendly path, normally Desktop, and reveal it with `open -R`.
+5. If supplementary illustrations are provided, insert them with `npm run illustrate:script` and validate the enhanced script.
+6. Render with `scripts/render_whiteboard_mp4.mjs`.
+7. Extract frames with ffmpeg and inspect at least early/middle/final frames.
+8. If content is wrong, labels are cut off, formulas are confusing, images are missing/cropped, or laser marks cover text, repair the script and rerender.
+9. Copy the final MP4 to a user-friendly path, normally Desktop, and reveal it with `open -R`.
+
+## Supplementary Illustration Workflow
+
+Use this when the user provides pictures to enrich a lecture, for example "use these illustrations in the video" or "attach these images as 插图". This is different from an image problem:
+
+- Do not run image recognition unless the picture is the source problem itself.
+- Do not generate new images or require an image API key.
+- Use user-provided images as teaching assets.
+- Prefer placing illustrations as independent visual explanation pages before the matching content page. This is more stable than forcing images into crowded existing pages.
+- Keep captions short. Do not rely on text inside the image; write important labels with whiteboard commands.
+
+After producing the base script, run one of these:
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --image /tmp/job/assets/illustration_1.png \
+  --image /tmp/job/assets/illustration_2.jpg \
+  --out /tmp/job/script_illustrated.json
+```
+
+For better placement, include metadata:
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --asset "/tmp/job/assets/concrete_section.png|混凝土内部结构|骨料像骨架，水泥浆像胶水。|骨料,水泥浆,内部|p2" \
+  --out /tmp/job/script_illustrated.json
+```
+
+The `--asset` format is:
+
+```text
+path|title|caption|keyword1,keyword2|pageId
+```
+
+Only `path` is required. When `pageId` is omitted, the enhancer matches by title/caption/keywords and page content. If the user supplied enough context in natural language, create a small `illustrations.json` manifest yourself and pass it with `--assets`.
 
 ## Script Guidance
 
@@ -77,10 +117,17 @@ node ~/.codex/skills/whiteboard-lecture-video/scripts/render_whiteboard_mp4.mjs 
   --script /tmp/job/script.json \
   --out /tmp/job/lesson.mp4 \
   --tts true \
+  --pace fast \
+  --aspect portrait \
+  --board-theme light \
   --base-url http://127.0.0.1:5001
 ```
 
+Use `--pace fast` for short-video rhythm. It maps to `1.25x` playback speed while keeping the same timing source for animation, subtitles, and narration so the generated text and voice stay aligned. Omit it for the standard `1.00x` version, or pass `--speed <number>` for an explicit override.
+Use `--aspect portrait` or `--aspect 9:16` for the 720×1280 phone-short-video canvas. Omit it for the standard 1200×800 landscape canvas.
+
 The script records wall-clock render time and writes the MP4. If rendering fails, read the JSON error; common causes are preflight failures, narration duration mismatch, or invalid command fields.
+Use `--board-theme dark` when the user requests a black-background whiteboard. The video API will render a black canvas and adapt/invert script colors for black-background readability while leaving the default white-background path unchanged.
 
 ## Frame QA
 

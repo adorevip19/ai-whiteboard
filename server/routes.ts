@@ -16,10 +16,22 @@ import {
   summarizeScriptKnowledge,
 } from "./aiScript";
 import { renderScriptToWebmInHeadlessBrowser } from "./videoRender";
+import {
+  enhanceScriptWithIllustrations,
+  suggestIllustrationSlots,
+} from "./illustratedScript";
 import type {
   WhiteboardCommand,
   WhiteboardScript,
 } from "../client/src/whiteboard/commandTypes";
+import {
+  applyBoardTheme,
+  normalizeBoardTheme,
+} from "../client/src/whiteboard/theme";
+import {
+  applyCanvasAspect,
+  normalizeCanvasAspect,
+} from "../client/src/whiteboard/canvasAspect";
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
 const DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
@@ -887,6 +899,8 @@ export async function registerRoutes(
     const job = createVideoRenderJob();
     try {
       const mode = parseExplanationMode(req.body?.mode);
+      const boardTheme = normalizeBoardTheme(req.body?.boardTheme);
+      const canvasAspect = normalizeCanvasAspect(req.body?.canvasAspect);
       const ttsEnabled = req.body?.ttsEnabled !== false;
       const playbackSpeed =
         typeof req.body?.playbackSpeed === "number" && Number.isFinite(req.body.playbackSpeed)
@@ -927,7 +941,10 @@ export async function registerRoutes(
             mode,
           });
         }
-        const generated = await generateAiScript(prompt, mode, controller.signal);
+        const generated = await generateAiScript(prompt, mode, controller.signal, {
+          boardTheme,
+          canvasAspect,
+        });
         scriptText = generated.scriptText;
       }
 
@@ -948,7 +965,18 @@ export async function registerRoutes(
           });
         }
       }
-      scriptText = JSON.stringify(renderPreflight.script);
+      const renderScript = applyCanvasAspect(
+        applyBoardTheme(renderPreflight.script, boardTheme),
+        canvasAspect,
+      );
+      const finalPreflight = preflightScriptText(JSON.stringify(renderScript));
+      if (!finalPreflight.report.ok || !finalPreflight.script) {
+        return res.status(400).json({
+          message: "画面比例转换后的脚本预检未通过，请修正布局后再生成视频。",
+          report: finalPreflight.report,
+        });
+      }
+      scriptText = JSON.stringify(finalPreflight.script);
 
       const baseUrl = getBaseUrl(req);
       await renderScriptToWebmInHeadlessBrowser({
@@ -989,6 +1017,70 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/ai-script/illustration-slots", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "scriptText 不能为空。" });
+      }
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法分析插图位置。",
+          report: preflight.report,
+        });
+      }
+      const maxSlots =
+        typeof req.body?.maxSlots === "number" && Number.isFinite(req.body.maxSlots)
+          ? Math.max(0, Math.min(8, Math.round(req.body.maxSlots)))
+          : 6;
+      return res.json({
+        suggestions: suggestIllustrationSlots(preflight.script, maxSlots),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/ai-script/apply-illustrations", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "scriptText 不能为空。" });
+      }
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法插入插图。",
+          report: preflight.report,
+        });
+      }
+      const enhanced = enhanceScriptWithIllustrations(
+        preflight.script,
+        Array.isArray(req.body?.illustrations) ? req.body.illustrations : [],
+      );
+      const enhancedPreflight = preflightScriptText(enhanced.scriptText);
+      if (!enhancedPreflight.report.ok || !enhancedPreflight.script) {
+        return res.status(400).json({
+          message: "插图增强后的脚本预检未通过。",
+          report: enhancedPreflight.report,
+          inserted: enhanced.inserted,
+          skipped: enhanced.skipped,
+        });
+      }
+      return res.json({
+        script: enhancedPreflight.script,
+        scriptText: JSON.stringify(enhancedPreflight.script),
+        report: enhancedPreflight.report,
+        suggestions: enhanced.suggestions,
+        inserted: enhanced.inserted,
+        skipped: enhanced.skipped,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.post("/api/ai-script/generate", async (req, res, next) => {
     const controller = createRequestAbortController(req, res);
     try {
@@ -1013,6 +1105,8 @@ export async function registerRoutes(
         }
       }
       const imageAnchors = Array.isArray(req.body?.imageAnchors) ? req.body.imageAnchors : undefined;
+      const boardTheme = normalizeBoardTheme(req.body?.boardTheme);
+      const canvasAspect = normalizeCanvasAspect(req.body?.canvasAspect);
       const sourceImageSizeRaw =
         req.body?.sourceImageSize && typeof req.body.sourceImageSize === "object"
           ? (req.body.sourceImageSize as Record<string, unknown>)
@@ -1026,6 +1120,8 @@ export async function registerRoutes(
           sourceImageDataUrl: sourceImageDataUrl || undefined,
           imageAnchors,
           sourceImageSize,
+          boardTheme,
+          canvasAspect,
         }),
       );
     } catch (error) {

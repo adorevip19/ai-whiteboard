@@ -2,7 +2,7 @@
 
 > 本文档专为 AI（LLM）阅读。读完后，你应当能够仅凭用户的口头需求，产出符合规范的 JSON 命令脚本，粘贴进白板的"JSON 命令脚本"输入框、点击"运行脚本"即可看到逐步动画 + 旁白讲解。
 
-**近期更新**：新增 `draw_image`，上传题图生成讲解时可以直接把原题图片放进白板，再用激光笔、箭头和短标签讲解关键位置；带图题不必默认完整复刻原图。新增 Azure TTS 旁白朗读、播放器速度调节和播放器暂停/继续功能。AI 生成新脚本时不要为了"让学生思考"滥用 `wait` 等待点；学生需要思考时可以随时手动暂停。但长文本、范文、题干重述、关键结论和修改后的原文必须给足可见时长，必要时可以用较长 `duration`、慢速 `laser_pointer` 或少量 `wait` 做阅读停顿。TTS 播放采用"段落首尾同步"：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。长正文、作文段落、题干、点评长句优先用显式 `x/y/width/height` 的 `write_paragraph` 自动换行；不要依赖模板框或多个大字号 `write_text`/`write_text_segments` 手搓坐标。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。新增 `write_math`、`write_math_steps`、`write_division_layout`，用于清晰渲染分数、根号、平方、推导步骤和带余数除法竖式。数学推导预检会检查空等号和不完整推导，公式不能写成 `M - 2 =` 或 `M = 30 + 2 =` 这种半截板书，必须把结果补完整。新增 `write_text_segments` 与 `emphasize_text`，用于精准强调单个数字、短词或一行文字中的局部内容。新增 `draw_rectangle`、`draw_triangle`、`draw_circle`、`draw_arc_arrow`、`draw_brace`，用于更积极地绘制结构化图示。新增 `move_object`，可让已绘制对象实时平移动画；新增 `draw_coordinate_system`、`draw_function`、`plot_point`、`draw_coordinate_segment`，用于初中函数图像、坐标几何和数形结合讲解。新增几何专用命令 `draw_point`、`draw_segment`、`draw_ray`、`draw_angle`、`mark_equal_segments`、`mark_parallel`、`mark_perpendicular`、`highlight_polygon`，用于稳定讲解几何证明、辅助线、角标、等长、平行、垂直和全等区域。新增 `construct_geometry`，以 JSXGraph 辅助的几何构造层计算垂足、交点、外接圆并自动展开成白板绘图命令。新增 `laser_pointer`，用于每一步讲解时像老师上课一样临时指示当前关注位置。
+**近期更新**：新增 `draw_image`，上传题图生成讲解时可以直接把原题图片放进白板，再用激光笔、箭头和短标签讲解关键位置；带图题不必默认完整复刻原图。新增 Azure TTS 旁白朗读、播放器速度调节、播放器暂停/继续、短视频快节奏 `1.25x`、黑色白板、`9:16` 手机竖屏白板视频选项。生成或导出时可以组合选择白底/黑底、横版/竖屏、标准/快节奏；同一个速度源会同时驱动字幕、语音播放和白板动画，避免文字、语音和画面错位。AI 生成新脚本时不要为了"让学生思考"滥用 `wait` 等待点；学生需要思考时可以随时手动暂停。但长文本、范文、题干重述、关键结论和修改后的原文必须给足可见时长，必要时可以用较长 `duration`、慢速 `laser_pointer` 或少量 `wait` 做阅读停顿。TTS 播放采用"段落首尾同步"：每条命令和它的旁白同时开始，白板按自己的动画速度绘制；如果白板先结束，会等当前旁白播完再进入下一条命令。长正文、作文段落、题干、点评长句优先用显式 `x/y/width/height` 的 `write_paragraph` 自动换行；不要依赖模板框或多个大字号 `write_text`/`write_text_segments` 手搓坐标。`annotate_circle` 圈画重点已优化为稳定、顺滑、清晰的电子白板批注效果。新增 `write_math`、`write_math_steps`、`write_division_layout`，用于清晰渲染分数、根号、平方、推导步骤和带余数除法竖式。数学推导预检会检查空等号和不完整推导，公式不能写成 `M - 2 =` 或 `M = 30 + 2 =` 这种半截板书，必须把结果补完整。新增 `write_text_segments` 与 `emphasize_text`，用于精准强调单个数字、短词或一行文字中的局部内容。新增 `draw_rectangle`、`draw_triangle`、`draw_circle`、`draw_arc_arrow`、`draw_brace`，用于更积极地绘制结构化图示。新增 `move_object`，可让已绘制对象实时平移动画；新增 `draw_coordinate_system`、`draw_function`、`plot_point`、`draw_coordinate_segment`，用于初中函数图像、坐标几何和数形结合讲解。新增几何专用命令 `draw_point`、`draw_segment`、`draw_ray`、`draw_angle`、`mark_equal_segments`、`mark_parallel`、`mark_perpendicular`、`highlight_polygon`，用于稳定讲解几何证明、辅助线、角标、等长、平行、垂直和全等区域。新增 `construct_geometry`，以 JSXGraph 辅助的几何构造层计算垂足、交点、外接圆并自动展开成白板绘图命令。新增 `laser_pointer`，用于每一步讲解时像老师上课一样临时指示当前关注位置。
 
 **AI 生成器更新**：应用主页现在支持让用户直接输入讲课需求，也支持上传题目图片。图片会先由后端视觉模型识别为题干、选项、图中文字和关键图形关系，再交给脚本生成器。后端调用 Perplexity Agent API，并通过 `openai/gpt-5.2` 生成白板脚本。生成后会先经过本地预检，再把预检报告交给 AI 自动修复，最多循环数轮，直到脚本可播放或只剩低风险建议。你作为脚本生成模型时，必须把输出控制为可解析 JSON，不要输出 Markdown 代码围栏；修复脚本时要优先解决预检报告里的错误、布局风险、激光笔缺失和小目标强调不准等问题。生成讲解时还要同步整理 `knowledgeSummary`，供学生随时打开知识点卡片查看；这部分不要塞进白板脚本最后一页。
 
@@ -14,7 +14,7 @@
 
 生成脚本时，必须把白板当成有状态的画面，而不是一串互不相关的命令。每一页、每一次 `clear_canvas` 后的新场景，都要维护一个内部“白板状态矩阵”：
 
-- 默认 `1200 × 800` 画布按 `6 列 × 4 行` 粗略划分，`R1C1` 是左上，`R4C6` 是右下。
+- 默认横版 `1200 × 800` 画布按 `6 列 × 4 行` 粗略划分，`R1C1` 是左上，`R4C6` 是右下。`9:16` 竖屏画布使用 `720 × 1280`，按 `4 列 × 8 行` 粗略划分，`R1C1` 是左上，`R8C4` 是右下。
 - 每创建一个可见对象，都要记录它的 `bbox`、所在页、所在场景、占用网格和对象 id。
 - 写下一条可见命令前，先检查当前页/当前场景已经有哪些对象。新文字、公式、段落、表格式信息、图形、箭头、坐标图、流程图、图示标签不能放进已占用或明显拥挤的网格。
 - 这条规则适用于所有学科：数学、物理、化学、生物、语文、英语、历史、政治、地理、经济学、社会科学解释、写作点评、阅读理解等，都必须先分区再落笔。
@@ -167,12 +167,61 @@
 
 - 只输出 JSON 对象。
 - 顶层格式使用 `{ "explanation": "...", "script": { "canvas": {...}, "commands": [...] } }`。
+- 默认生成白色白板：`canvas.background` 用 `"#ffffff"`，`canvas.theme` 可省略或写 `"light"`。
+- 如果调用方明确要求黑色白板，必须生成黑底版本：`canvas.background` 用 `"#050505"`，`canvas.theme` 写 `"dark"`；主文字、公式、线条、坐标轴、几何图和标注使用浅色或高对比强调色，不要使用黑色/深灰墨迹。
+- 默认画布为横版 `1200 × 800`。如果调用方选择 `9:16` 手机短视频或 `canvasAspect: "portrait"`，必须生成竖屏 `720 × 1280`，并按上下分段方式排版。
 - `explanation` 用中文简要说明讲解设计。
 - `script` 必须是播放器可直接运行的白板脚本。
 - 不要输出 Markdown 代码围栏。
 - 不要输出注释。
 - 不要把真实 API Key、隐私信息、部署说明写进脚本。
 - 修复时保持原教学意图，优先解决预检报告中的 `error` 和 `warning`。
+
+### 1.1.1 生成与导出选项清单
+
+应用现在支持把同一份白板讲解按不同画面、背景、节奏和输入来源生成。AI 生成脚本时必须理解这些选项的含义，并在用户明确选择时遵守。
+
+**讲解内容来源**
+
+- `prompt/text`：用户输入自然语言讲课需求，由 AI 生成白板脚本。
+- `sourceImageDataUrl/imageDataUrl`：用户上传题图或截图。系统先识别图片，再生成讲解；生成脚本时优先用 `draw_image` 展示原题图，并用激光笔、箭头和短标签讲关键位置。
+- `script/scriptText`：用户已有 AI Whiteboard JSON 脚本，只做预检、主题转换、画面比例转换和视频渲染。
+
+**讲解模式**
+
+- `mode: "detailed"`：详细讲解。适合完整课堂讲解，先读题，再分析条件，逐步推导，最后总结答案。
+- `mode: "concise"`：简洁讲解。适合用户已经读过题、思考过，只需要点破关键卡点；仍然要先用一句话读题或复述问题，再给核心提示。
+
+**语音与字幕节奏**
+
+- `ttsEnabled: true`：生成有声视频。每条 `narration` 会合成为语音；白板动作和旁白同时开始，下一步等待二者都完成。
+- `ttsEnabled: false`：生成无声视频。脚本的 `duration` 必须仍然保证学生看得清。
+- `playbackSpeed: 1` 或“标准”：标准课堂节奏。
+- `playbackSpeed: 1.25` 或“短视频”：更快的短视频节奏。字幕、语音播放和白板动画使用同一个速度源，避免语音和文字不同步。
+- `playbackSpeed` 可在 `0.5–2` 范围内自定义；一般不要超过 `1.25–1.35`，否则教育讲解容易听不清。
+- TTS 合成音频保持基础语速，导出和播放阶段统一用 `playbackSpeed` 加速；不要同时改 TTS rate 和播放器速度，避免双重加速。
+
+**画布比例**
+
+- `canvasAspect: "landscape"` 或默认横版：标准白板视频，目标画布 `1200 × 800`。
+- `canvasAspect: "portrait"` / `"9:16"` / `"vertical"`：手机短视频竖屏，目标画布 `720 × 1280`，输出 MP4 为 `9:16`。
+- 竖屏脚本应上下分段推进，不要把横版两栏布局硬塞进窄画面；标题和结论不要横向铺太宽，长句必须用 `write_paragraph` 自动换行，图形和推导优先上下排列。
+- 对已有横版脚本导出竖屏时，服务端会按画布比例缩放坐标、字号、线宽和图形尺寸；更高质量的竖屏成片仍然建议在 AI 生成阶段就选择 `canvasAspect: "portrait"`。
+
+**白板背景**
+
+- `boardTheme: "light"` 或默认白底：`canvas.background` 使用 `"#ffffff"`，`canvas.theme` 可写 `"light"` 或省略。
+- `boardTheme: "dark"` 或黑色白板：`canvas.background` 使用 `"#050505"`，`canvas.theme` 写 `"dark"`；主文字、公式、线条、坐标轴、几何图和标注都要使用浅色或高对比强调色。
+- 导出时即使传入白底脚本，也可以通过 `boardTheme: "dark"` 生成黑底反色版本；原脚本文本不会被持久改写。
+
+**常用组合**
+
+- 标准横版白底有声讲解：`canvasAspect: "landscape"` + `boardTheme: "light"` + `playbackSpeed: 1` + `ttsEnabled: true`
+- 横版黑底讲解：`canvasAspect: "landscape"` + `boardTheme: "dark"` + `playbackSpeed: 1`
+- 横版白底短视频节奏：`canvasAspect: "landscape"` + `boardTheme: "light"` + `playbackSpeed: 1.25`
+- `9:16` 白底短视频：`canvasAspect: "portrait"` + `boardTheme: "light"` + `playbackSpeed: 1.25`
+- `9:16` 黑底短视频：`canvasAspect: "portrait"` + `boardTheme: "dark"` + `playbackSpeed: 1.25`
+- 无声版本：任意画面/背景/速度组合 + `ttsEnabled: false`
 
 ### 1.2 图片题识别输入
 
@@ -201,7 +250,8 @@
   "canvas": {
     "width": 1200,
     "height": 800,
-    "background": "#ffffff"
+    "background": "#ffffff",
+    "theme": "light"
   },
   "pages": [
     { "id": "intro", "title": "读题" },
@@ -214,6 +264,9 @@
 
 - 坐标原点 `(0,0)` 在左上角，x 向右，y 向下，单位为像素。
 - 画布会自动缩放以适配屏幕，但内部坐标始终按 `canvas.width × canvas.height` 计算。
+- 标准横版建议使用 `1200 × 800`；`9:16` 手机短视频竖屏使用 `720 × 1280`。竖屏不是裁剪横版画面，而是独立白板尺寸，所有坐标和排版都要按竖屏重新规划。
+- 实验兼容：普通命令也可以使用归一布局输入，字段后缀为 `N`，范围通常为 `0–1`，例如 `xN: 0.1`、`yN: 0.2`、`posN: [0.1, 0.2]`、`sizeN: [0.35, 0.18]`、`fromN/toN/pointsN/bboxN`。验证器会先按当前画布尺寸换算成绝对坐标，再进入统一 bbox 预检和渲染；旧的 `x/y/width/height/from/to/points/bbox` 仍然完全可用。
+- 若同一字段同时提供绝对坐标和归一坐标，绝对坐标优先。归一字段适合粗排版和跨画布尺寸的布局；需要圈画极小公式局部、像素级锚点或图片内部 anchors 时，仍优先使用该命令原本要求的坐标格式。
 - 推荐默认尺寸：`1200 × 800`。
 - 横向流程图可用 `1600 × 700`，长文列表可用 `1000 × 1400`。
 - `pages` 可选。没有 `pages` 时兼容旧脚本，默认只有一页。

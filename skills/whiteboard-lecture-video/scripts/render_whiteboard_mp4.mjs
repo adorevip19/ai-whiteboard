@@ -8,11 +8,22 @@ const scriptPath = args.script;
 const outPath = args.out;
 const baseUrl = args["base-url"] ?? "http://127.0.0.1:5001";
 const ttsEnabled = args.tts !== "false";
-const playbackSpeed = Number(args.speed ?? 1);
+const STANDARD_PLAYBACK_SPEED = 1;
+const FAST_PLAYBACK_SPEED = 1.25;
+const pace = args.pace === "fast" || args.pace === "short" || args.pace === "short-video" ? "fast" : "standard";
+const playbackSpeed = Number(args.speed ?? (pace === "fast" ? FAST_PLAYBACK_SPEED : STANDARD_PLAYBACK_SPEED));
+const boardTheme = args["board-theme"] === "dark" || args["board-theme"] === "black" ? "dark" : "light";
+const canvasAspect =
+  args.aspect === "portrait" ||
+  args.aspect === "9:16" ||
+  args["canvas-aspect"] === "portrait" ||
+  args["canvas-aspect"] === "9:16"
+    ? "portrait"
+    : "landscape";
 
 if (!scriptPath || !outPath) {
   console.error(
-    "Usage: render_whiteboard_mp4.mjs --script script.json --out lesson.mp4 [--base-url http://127.0.0.1:5001] [--tts true|false] [--speed 1]",
+    "Usage: render_whiteboard_mp4.mjs --script script.json --out lesson.mp4 [--base-url http://127.0.0.1:5001] [--tts true|false] [--speed 1|--pace fast] [--board-theme light|dark] [--aspect landscape|portrait|9:16]",
   );
   process.exit(2);
 }
@@ -26,6 +37,8 @@ const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/video/render`, {
     scriptText,
     ttsEnabled,
     playbackSpeed: Number.isFinite(playbackSpeed) ? playbackSpeed : 1,
+    boardTheme,
+    canvasAspect,
   }),
 });
 const buffer = Buffer.from(await response.arrayBuffer());
@@ -57,6 +70,8 @@ console.log(
       seconds: Number(seconds.toFixed(3)),
       bytes: buffer.length,
       outPath,
+      playbackSpeed: Number.isFinite(playbackSpeed) ? playbackSpeed : STANDARD_PLAYBACK_SPEED,
+      canvasAspect,
     },
     null,
     2,

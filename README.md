@@ -13,6 +13,7 @@
 - **annotate_underline / annotate_circle / clear_annotations** — 在独立批注图层划重点，并可一键清除
 - **wait** — 在关键节点暂停，等待用户点击“下一步”后继续
 - **Azure TTS** — 可用 Microsoft Azure Speech 朗读 `narration` 旁白；每段旁白和对应白板动作同时开始，下一段会等二者都完成后再继续
+- **黑色白板** — 生成或导出时可选择黑底版本，服务端会把画布背景设为黑色，并把文字、公式、线条、坐标轴、几何图和标注颜色反转/修正为黑底可读
 - 顺序执行 commands 数组，实时显示当前步骤
 - JSON 格式错误、未知命令、缺字段都有明确提示
 
@@ -82,6 +83,7 @@ client/src/
     ├── commandTypes.ts                # JSON Schema 类型与校验
     ├── sampleScript.ts                # 内置示例脚本
     ├── WhiteboardCanvas.tsx           # SVG 渲染（自动按比例缩放）
+    ├── theme.ts                       # 白底/黑底主题与颜色反转工具
     └── ScriptRunner.ts                # 逐步动画执行器（requestAnimationFrame）
 
 server/
