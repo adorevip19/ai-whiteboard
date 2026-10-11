@@ -7,6 +7,17 @@ import {
   type WhiteboardCommand,
   type WhiteboardScript,
 } from "../client/src/whiteboard/commandTypes";
+import {
+  applyBoardTheme,
+  defaultCanvasBackground,
+  normalizeBoardTheme,
+  type BoardTheme,
+} from "../client/src/whiteboard/theme";
+import {
+  canvasSizeForAspect,
+  normalizeCanvasAspect,
+  type CanvasAspect,
+} from "../client/src/whiteboard/canvasAspect";
 
 type PreflightSeverity = "error" | "warning" | "suggestion";
 
@@ -383,7 +394,13 @@ function addPacingIssues(
   if (visibleText) {
     const chars = countVisibleChars(visibleText);
     const recommended = recommendedTextDurationMs(visibleText);
+    const isLongReadableBlock =
+      command.type === "write_paragraph" ||
+      command.type === "revision_compare" ||
+      chars > 40 ||
+      visibleText.includes("\n");
     if (
+      isLongReadableBlock &&
       recommended > 0 &&
       duration < recommended &&
       ((chars > 20 && duration < 1200) || duration <= 500)
@@ -399,18 +416,9 @@ function addPacingIssues(
     }
   }
 
-  const narration = getCommandNarration(command);
-  const recommendedNarration = recommendedNarrationDurationMs(narration);
-  if (recommendedNarration > 0 && duration < recommendedNarration * 0.85) {
-    addIssue(
-      issues,
-      command,
-      commandIndex,
-      "warning",
-      `旁白与动画时长不匹配：${countVisibleChars(narration)} 个旁白字符只给了 ${duration}ms。`,
-      `把 duration 提高到约 ${recommendedNarration}ms，或缩短旁白；不要依赖 TTS 等待来掩盖过短动画，尤其是 iOS Safari 播放导出视频时会显得白板跑在语音前面。`,
-    );
-  }
+  // Narration is intentionally allowed to outlast the visual animation.
+  // The player/exporter waits for TTS before advancing, so short title/text
+  // animations can appear promptly and remain readable while the teacher talks.
 }
 
 function addNarrationStyleIssues(
@@ -2471,7 +2479,6 @@ function normalizeGeneratedScript(script: WhiteboardScript): WhiteboardScript {
       .filter((command): command is Exclude<WhiteboardCommand, { type: "wait" }> => command.type !== "wait")
       .map((command) => {
         command = normalizeLongTextCommandTypography(command) as typeof command;
-        command = normalizeNarrationDuration(command) as typeof command;
         if (command.type === "write_text") {
           const text = normalizeLatexText(command.text);
           if (canAutoConvertTextToMath(text)) {
@@ -2531,29 +2538,6 @@ function normalizeGeneratedScript(script: WhiteboardScript): WhiteboardScript {
       fitMathCommandsToCanvas(uniquifyRepeatedLayoutPages(normalized)),
     ),
   );
-}
-
-function estimateNarrationDurationForScriptMs(narration: string) {
-  let cjk = 0;
-  let latin = 0;
-  let punctuation = 0;
-  for (const char of narration) {
-    if (/[\u4e00-\u9fff]/.test(char)) cjk += 1;
-    else if (/[A-Za-z0-9]/.test(char)) latin += 1;
-    else if (!/\s/.test(char)) punctuation += 1;
-  }
-  return Math.max(1400, Math.round(cjk * 260 + latin * 85 + punctuation * 180 + 600));
-}
-
-function normalizeNarrationDuration(command: WhiteboardCommand): WhiteboardCommand {
-  const narration = getCommandNarration(command);
-  if (!narration || !("duration" in command) || typeof command.duration !== "number") {
-    return command;
-  }
-  const estimated = estimateNarrationDurationForScriptMs(narration);
-  const minimum = Math.ceil(Math.max(command.duration, estimated * 0.55) / 100) * 100;
-  if (minimum <= command.duration) return command;
-  return { ...command, duration: minimum } as WhiteboardCommand;
 }
 
 function removeInvalidMoveObjectCommands(script: WhiteboardScript): WhiteboardScript {
@@ -3208,11 +3192,15 @@ function baseInstructions(guideExcerpt: string) {
 8. 不要使用预生成板书图片或遮罩揭示路线。
 9. 画面要留白，严禁文字互相重叠、文字压住标题、批注遮挡正文、图形/框/箭头压住文字。长题干、作文原文、修改后原文、点评长句优先使用显式 x/y/width/height 的 write_paragraph 或 revision_compare，不要用模板框，不要用多个大字号 write_text 手搓坐标。
 9a. 复述题目、题干分析、讲解说明、总结句这类长文字字号要克制：比标题小很多，比普通短标签再小约 2px。write_paragraph 建议 fontSize 22–26；必须用单行 write_text 时，超过 16 个中文字符就把字号比原计划下调 2，超过 28 个中文字符继续拆行或改用 write_paragraph。
+9b. 可以使用归一布局输入做粗排版：xN/yN、posN、sizeN、fromN/toN、pointsN、bboxN 表示相对当前画布宽高的 0~1 坐标，后端会先换算成绝对 x/y/width/height/from/to/points/bbox，再统一做 bbox 预检。若同时写绝对字段和归一字段，绝对字段优先。像素级公式局部批注和图片内部 anchors 仍按命令原格式书写。
 10. 不要默认给文字和公式套矩形框；只有题目区、结论区、流程节点、真正需要分组的区域才使用 draw_rectangle。
 11. 圈画要谨慎；不要用 annotate_circle 圈小数字、短词或已经很明显的内容。优化脚本时应删除无意义框线和圈画，或改成 emphasize_text。
 12. narration 要像亲和、有耐心、会打比方的老师直接面对学生本人讲课。不要机械播报；允许适度重复、适度啰嗦、接地气类比和轻微幽默。关键概念可以换说法重复强调，帮助学生慢慢听懂。
+12c. 配音由 Gemini 的双语老师音色统一完成。narration 只写实际要说的话，不写“激动地”“停顿”等舞台提示，不塞 SSML 或语气指令。用自然的问句、标点和完整短句承载启发、解释、对比和鼓励；同一小段里的中文解释与英文示范尽量连贯，不按单字切碎。重点要明确但不能句句喊重点，普通推理保持平稳。
 12a. narration 不能描述白板操作过程，不能说“我新建一页”“我切到下一页”“我擦掉”“我画/写/圈/框/移动/标出”。白板动作会自己呈现，旁白只讲知识点、思路和学生该注意的内容。
 12b. narration 不能面向第三方，不能说“让孩子看”“给学生展示”“家长可以……”。要直接对正在听课的学生说“你看这里”“这一步要抓住……”“先想一想……”。
+12c. 非自然科学内容（语文、英语、历史、地理、政治、社会科学、写作点评、阅读理解、音乐/艺术、人文常识、生活技能等）必须有真人讲述感和故事感：像老师把一个小场景、小矛盾、小线索慢慢讲给学生听，而不是硬罗列事实清单。优先使用“先把画面放到脑子里”“这里真正发生的变化是……”“你会发现……”这类自然过渡；可以讲人物、时间、原因、转折和结果。数学、物理、化学等数理推导仍以清晰逻辑为主，但也不要冷冰冰播报。
+12d. 非自然科学讲解的板书要少而精，白板上写关键词、人物关系、时间线、结构图或金句；旁白负责把关键词串成故事。不要把整段资料直接搬成项目符号列表，也不要连续使用“第一、第二、第三”机械列点超过 3 次。
 13. 完整讲题必须优先使用多页白板：顶层写 pages，并用 switch_page 分阶段切换。不要把读题、分析、计算、总结硬塞进一页。一页只讲一个小问题；如果一页主要对象超过 12–14 个，要拆到下一页。
 14. 数学推导必须逻辑完整：任何公式行都不能以等号结尾；最终答案出现前，推导链必须显式算到该答案。例如不要写 "M - 2 =" 或 "M = 30 + 2 ="，必须写成 "M - 2 = 30" 和 "M = 30 + 2 = 32"。
 15. 几何证明必须优先使用几何专用命令：draw_point、draw_segment、draw_ray、draw_angle、mark_equal_segments、mark_parallel、mark_perpendicular、highlight_polygon。不要用普通圈画猜点位；辅助线、角标、等长、平行、垂直和全等区域都要用结构化几何命令表达。
@@ -3558,7 +3546,13 @@ export async function generateAiScript(
   prompt: string,
   mode: AiExplanationMode = "detailed",
   signal?: AbortSignal,
-  options: { sourceImageDataUrl?: string; imageAnchors?: ImageAnchor[]; sourceImageSize?: SourceImageSize } = {},
+  options: {
+    sourceImageDataUrl?: string;
+    imageAnchors?: ImageAnchor[];
+    sourceImageSize?: SourceImageSize;
+    boardTheme?: BoardTheme;
+    canvasAspect?: CanvasAspect;
+  } = {},
 ): Promise<AiScriptResult> {
   const guideExcerpt = await readGuideExcerpt();
   const sourceImageDataUrl = options.sourceImageDataUrl?.trim();
@@ -3573,6 +3567,9 @@ export async function generateAiScript(
       ? options.sourceImageSize
       : undefined;
   const rounds: AiScriptResult["rounds"] = [];
+  const boardTheme = normalizeBoardTheme(options.boardTheme);
+  const canvasAspect = normalizeCanvasAspect(options.canvasAspect);
+  const canvasSize = canvasSizeForAspect(canvasAspect);
   const maxRounds = getMaxRepairRounds();
   const generateModel =
     process.env.PERPLEXITY_GENERATE_MODEL ||
@@ -3596,8 +3593,18 @@ ${explanationModeInstructions(mode)}`,
 用户需求：
 ${prompt}
 
+白板背景要求：
+${boardTheme === "dark"
+  ? `本次必须生成黑色白板版本。canvas.background 必须使用 "${defaultCanvasBackground("dark")}"，canvas.theme 必须写 "dark"。所有文字、公式、线条、坐标轴、几何图、标注和默认墨迹都要适配黑底：主文字用接近白色的浅色，辅助线和网格用中高亮度灰色，浅色填充要改成深色低透明填充。不要输出黑色或深灰文字/线条。`
+  : `本次生成默认白色白板版本。canvas.background 使用 "#ffffff"，canvas.theme 可写 "light" 或省略。`}
+
+画面比例要求：
+${canvasAspect === "portrait"
+  ? `本次必须生成 9:16 手机短视频竖屏版本。canvas.width 必须是 ${canvasSize.width}，canvas.height 必须是 ${canvasSize.height}。按 4 列 × 8 行理解竖屏画布，内容从上到下分段推进；标题和结论不要横向铺太宽，长句必须用 write_paragraph 自动换行，图形和推导优先上下排列。`
+  : `本次生成标准横版白板。canvas.width 建议是 ${canvasSize.width}，canvas.height 建议是 ${canvasSize.height}。`}
+
 布局规划要求：
-在生成 scriptLines 前，先按“页/场景”规划白板状态矩阵。默认 1200×800 画布按 6 列 × 4 行理解：R1C1 在左上，R4C6 在右下。每添加一条可见命令后，更新该对象的 bbox、占用网格和剩余 freeRegions；下一条可见命令必须先估算自身尺寸，再放进能容纳它的空白 bbox。短公式至少预留约 240×70，推导步骤或段落至少预留约 420×140，图示/图表至少预留约 420×260。找不到足够空白区时，必须先 erase_object/clear_canvas 清理不再需要的对象，或 switch_page 新开一页。长段落使用显式 x/y/width/height 的 write_paragraph；不要使用 layout_page、slotId 或模板框。
+在生成 scriptLines 前，先按“页/场景”规划白板状态矩阵。当前画布为 ${canvasSize.width}×${canvasSize.height}，${canvasAspect === "portrait" ? "按 4 列 × 8 行理解：R1C1 在左上，R8C4 在右下。" : "按 6 列 × 4 行理解：R1C1 在左上，R4C6 在右下。"}每添加一条可见命令后，更新该对象的 bbox、占用网格和剩余 freeRegions；下一条可见命令必须先估算自身尺寸，再放进能容纳它的空白 bbox。短公式至少预留约 240×70，推导步骤或段落至少预留约 420×140，图示/图表至少预留约 420×260。找不到足够空白区时，必须先 erase_object/clear_canvas 清理不再需要的对象，或 switch_page 新开一页。长段落使用显式 x/y/width/height 的 write_paragraph；不要使用 layout_page、slotId 或模板框。
 
 原题图片资源：
 ${hasSourceImage ? `系统已提供原题图片资源。需要展示题图时，使用 draw_image，src 必须写成 "${SOURCE_IMAGE_PLACEHOLDER}"。不要把图片改写成 URL，不要输出 base64。${sourceImageSize ? `原图尺寸约 ${sourceImageSize.width}×${sourceImageSize.height}，宽高比 ${(sourceImageSize.width / sourceImageSize.height).toFixed(2)}。` : ""}` : "本次未提供原题图片资源；如题目有图示，需要用白板命令重构关键图形关系。"}
@@ -3656,6 +3663,11 @@ ${hasSourceImage ? "原图模式下严禁把多个推导块挤在一页：每个
 
 ${explanationModeInstructions(mode)}`,
       input: `请修复下面这份 AI Whiteboard 脚本。保持原教学意图，但必须解决预检报告中的错误和风险，特别是板书节奏过快、长文本 duration 太短、缺少阅读停顿等播放体验问题。
+
+白板背景要求：
+${boardTheme === "dark"
+  ? `修复后仍必须是黑色白板版本：canvas.background 使用 "${defaultCanvasBackground("dark")}"，canvas.theme 写 "dark"，文字、公式、线条、坐标轴和标注都必须是黑底可读的浅色或高对比强调色。`
+  : `修复后保持默认白色白板版本。`}
 
 预检报告：
 ${reportForPrompt(check.report)}
@@ -3716,7 +3728,7 @@ ${current.scriptText}
     );
   }
 
-  const finalScript = replaceSourceImagePlaceholders(
+  const normalizedFinalScript = replaceSourceImagePlaceholders(
     materializeImageAnchors(
       ensureSourceImagePage(
         normalizeGeneratedScript(current.script),
@@ -3729,6 +3741,7 @@ ${current.scriptText}
     ),
     sourceImageDataUrl,
   );
+  const finalScript = applyBoardTheme(normalizedFinalScript, boardTheme);
   const finalScriptText = stringifyScript(finalScript);
   const finalCheck = preflightScriptText(finalScriptText);
   if (finalCheck.report.errors > 0) {
@@ -3950,7 +3963,7 @@ ${check.script ? whiteboardStateForPrompt(check.script) : "脚本未通过 schem
 当前脚本：
 ${currentText}
 
-请修复错误、降低布局风险，并按 AI_GUIDE 优化板书节奏、长文本 duration、阅读停顿、激光笔、数学表达、强调方式和旁白口吻。尤其要避免范文、修改后原文、题干重述被 300–500ms 快速刷屏；旁白不能描述白板操作过程，也不能面向第三方，要像老师直接对学生本人讲课。输出完整 JSON，包含 explanation、scriptLines、knowledgeSummary，其中 scriptLines 是完整 JSON 脚本文本按行拆成的字符串数组。`,
+请修复错误、降低布局风险，并按 AI_GUIDE 优化板书节奏、长文本 duration、阅读停顿、激光笔、数学表达、强调方式和旁白口吻。尤其要避免范文、修改后原文、题干重述被 300–500ms 快速刷屏；旁白不能描述白板操作过程，也不能面向第三方，要像老师直接对学生本人讲课。若内容不是数学/物理/化学这类数理推导，旁白必须有真人讲述感和故事感，用场景、线索、转折把知识串起来，不要硬罗列事实。输出完整 JSON，包含 explanation、scriptLines、knowledgeSummary，其中 scriptLines 是完整 JSON 脚本文本按行拆成的字符串数组。`,
       signal,
     });
     const normalized = normalizeAiScriptPayloadDraft(repaired.json);

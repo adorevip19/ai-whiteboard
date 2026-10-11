@@ -13,3 +13,18 @@ squeeze-theorem-script.json
 .idea/
 .claude/
 push.command
+
+# Private interactive learner data and local QA
+interactive-data/
+output/
+
+.playwright-cli/
+
+# Local configuration, private course media and temporary reports
+.env.*
+!.env.example
+course-bundles/
+tmp/
+*.db
+*.db-shm
+*.db-wal

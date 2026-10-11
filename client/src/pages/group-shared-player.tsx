@@ -35,6 +35,8 @@ type GroupSharePayload = {
   lectures: GroupShareLecture[];
 };
 
+const STANDARD_TTS_RATE = 1;
+
 function getNarrationFromCommand(cmd: WhiteboardCommand) {
   return "narration" in cmd && typeof cmd.narration === "string"
     ? cmd.narration.trim() || null
@@ -162,7 +164,7 @@ export default function GroupSharedPlayerPage() {
     const response = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, speed: playbackSpeed }),
+      body: JSON.stringify({ text, rate: STANDARD_TTS_RATE }),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null);

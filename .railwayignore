@@ -5,3 +5,8 @@ node_modules/
 .env
 .env.*
 *.log
+interactive-data/
+output/
+.playwright-cli/
+data.db*
+.git/

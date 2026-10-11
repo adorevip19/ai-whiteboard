@@ -686,6 +686,7 @@ export interface CanvasConfig {
   width: number;
   height: number;
   background: string;
+  theme?: "light" | "dark";
 }
 
 export interface WhiteboardScript {
@@ -1051,8 +1052,10 @@ export function validateScript(raw: unknown): {
   }
   const background =
     typeof c.background === "string" ? c.background : "#ffffff";
+  const theme: CanvasConfig["theme"] =
+    c.theme === "dark" || c.theme === "light" ? c.theme : undefined;
 
-  const canvas = { width: c.width, height: c.height, background };
+  const canvas = { width: c.width, height: c.height, background, theme };
 
   let pages: PageConfig[] | undefined;
   if (obj.pages !== undefined) {
@@ -1090,11 +1093,20 @@ export function validateScript(raw: unknown): {
   }
 
   const commands: WhiteboardCommand[] = [];
+  let activeCanvas = canvas;
   for (let i = 0; i < obj.commands.length; i++) {
-    const cmdRaw = obj.commands[i];
+    const cmdRaw = normalizeNormalizedLayoutCommand(obj.commands[i], activeCanvas);
     const v = validateCommand(cmdRaw, i);
     if (!v.ok) return { ok: false, error: v.error };
     commands.push(v.command);
+    if (v.command.type === "set_canvas") {
+      activeCanvas = {
+        width: v.command.width,
+        height: v.command.height,
+        background: v.command.background ?? "#ffffff",
+        theme,
+      };
+    }
   }
 
   for (let i = 0; i < commands.length; i++) {
@@ -1132,6 +1144,172 @@ export function validateScript(raw: unknown): {
       commands,
     },
   };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function copyWithAbsoluteField(
+  target: Record<string, unknown>,
+  absoluteKey: string,
+  normalizedKey: string,
+  scale: number,
+) {
+  if (isFiniteNumber(target[absoluteKey]) || !isFiniteNumber(target[normalizedKey])) return;
+  target[absoluteKey] = target[normalizedKey] * scale;
+}
+
+function readNormalizedPoint(value: unknown): [number, number] | undefined {
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    isFiniteNumber(value[0]) &&
+    isFiniteNumber(value[1])
+  ) {
+    return [value[0], value[1]];
+  }
+  return undefined;
+}
+
+function toAbsolutePoint(point: [number, number], canvas: CanvasConfig): [number, number] {
+  return [point[0] * canvas.width, point[1] * canvas.height];
+}
+
+function copyWithAbsolutePoint(
+  target: Record<string, unknown>,
+  absoluteKey: string,
+  normalizedKey: string,
+  canvas: CanvasConfig,
+) {
+  if (readNormalizedPoint(target[absoluteKey])) return;
+  const point = readNormalizedPoint(target[normalizedKey]);
+  if (point) target[absoluteKey] = toAbsolutePoint(point, canvas);
+}
+
+function normalizeNormalizedRect(
+  value: unknown,
+  canvas: CanvasConfig,
+): { x: number; y: number; width: number; height: number } | undefined {
+  if (
+    Array.isArray(value) &&
+    value.length === 4 &&
+    value.every((item) => isFiniteNumber(item))
+  ) {
+    return {
+      x: value[0] * canvas.width,
+      y: value[1] * canvas.height,
+      width: value[2] * canvas.width,
+      height: value[3] * canvas.height,
+    };
+  }
+  if (!value || typeof value !== "object") return undefined;
+  const rect = value as Record<string, unknown>;
+  const x = isFiniteNumber(rect.x) ? rect.x : rect.xN;
+  const y = isFiniteNumber(rect.y) ? rect.y : rect.yN;
+  const width = isFiniteNumber(rect.width) ? rect.width : rect.widthN;
+  const height = isFiniteNumber(rect.height) ? rect.height : rect.heightN;
+  if (
+    !isFiniteNumber(x) ||
+    !isFiniteNumber(y) ||
+    !isFiniteNumber(width) ||
+    !isFiniteNumber(height)
+  ) {
+    return undefined;
+  }
+  return {
+    x: x * canvas.width,
+    y: y * canvas.height,
+    width: width * canvas.width,
+    height: height * canvas.height,
+  };
+}
+
+function normalizeNormalizedLayoutCommand(raw: unknown, canvas: CanvasConfig): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const command = { ...(raw as Record<string, unknown>) };
+
+  const pos = readNormalizedPoint(command.posN);
+  if (pos) {
+    if (!isFiniteNumber(command.x)) command.x = pos[0] * canvas.width;
+    if (!isFiniteNumber(command.y)) command.y = pos[1] * canvas.height;
+  }
+
+  const center = readNormalizedPoint(command.centerN);
+  if (center) {
+    if (!isFiniteNumber(command.cx)) command.cx = center[0] * canvas.width;
+    if (!isFiniteNumber(command.cy)) command.cy = center[1] * canvas.height;
+  }
+
+  const size = readNormalizedPoint(command.sizeN);
+  if (size) {
+    if (!isFiniteNumber(command.width)) command.width = size[0] * canvas.width;
+    if (!isFiniteNumber(command.height)) command.height = size[1] * canvas.height;
+  }
+
+  copyWithAbsoluteField(command, "x", "xN", canvas.width);
+  copyWithAbsoluteField(command, "y", "yN", canvas.height);
+  copyWithAbsoluteField(command, "width", "widthN", canvas.width);
+  copyWithAbsoluteField(command, "height", "heightN", canvas.height);
+  copyWithAbsoluteField(command, "cx", "cxN", canvas.width);
+  copyWithAbsoluteField(command, "cy", "cyN", canvas.height);
+  copyWithAbsoluteField(command, "radius", "radiusN", Math.min(canvas.width, canvas.height));
+
+  copyWithAbsolutePoint(command, "from", "fromN", canvas);
+  copyWithAbsolutePoint(command, "to", "toN", canvas);
+  copyWithAbsolutePoint(command, "vertex", "vertexN", canvas);
+  copyWithAbsolutePoint(command, "point1", "point1N", canvas);
+  copyWithAbsolutePoint(command, "point2", "point2N", canvas);
+  copyWithAbsolutePoint(command, "through", "throughN", canvas);
+
+  if (!Array.isArray(command.points) && Array.isArray(command.pointsN)) {
+    const points = command.pointsN.map((point) => readNormalizedPoint(point));
+    if (points.every(Boolean)) {
+      command.points = points.map((point) => toAbsolutePoint(point as [number, number], canvas));
+    }
+  }
+
+  if (command.to && typeof command.to === "object" && !Array.isArray(command.to)) {
+    const to = { ...(command.to as Record<string, unknown>) };
+    copyWithAbsoluteField(to, "x", "xN", canvas.width);
+    copyWithAbsoluteField(to, "y", "yN", canvas.height);
+    command.to = to;
+  } else if (command.toN && typeof command.toN === "object" && !Array.isArray(command.toN)) {
+    const toN = command.toN as Record<string, unknown>;
+    if (isFiniteNumber(toN.x) && isFiniteNumber(toN.y)) {
+      command.to = { x: toN.x * canvas.width, y: toN.y * canvas.height };
+    }
+  }
+
+  if (command.by && typeof command.by === "object" && !Array.isArray(command.by)) {
+    const by = { ...(command.by as Record<string, unknown>) };
+    copyWithAbsoluteField(by, "dx", "dxN", canvas.width);
+    copyWithAbsoluteField(by, "dy", "dyN", canvas.height);
+    command.by = by;
+  } else if (command.byN && typeof command.byN === "object" && !Array.isArray(command.byN)) {
+    const byN = command.byN as Record<string, unknown>;
+    if (isFiniteNumber(byN.dx) && isFiniteNumber(byN.dy)) {
+      command.by = { dx: byN.dx * canvas.width, dy: byN.dy * canvas.height };
+    }
+  }
+
+  if (
+    command.bbox &&
+    typeof command.bbox === "object" &&
+    !Array.isArray(command.bbox)
+  ) {
+    const bbox = { ...(command.bbox as Record<string, unknown>) };
+    copyWithAbsoluteField(bbox, "x", "xN", canvas.width);
+    copyWithAbsoluteField(bbox, "y", "yN", canvas.height);
+    copyWithAbsoluteField(bbox, "width", "widthN", canvas.width);
+    copyWithAbsoluteField(bbox, "height", "heightN", canvas.height);
+    command.bbox = bbox;
+  } else {
+    const bbox = normalizeNormalizedRect(command.bboxN, canvas);
+    if (bbox) command.bbox = bbox;
+  }
+
+  return command;
 }
 
 function validateCommand(

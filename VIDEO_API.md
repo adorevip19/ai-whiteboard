@@ -1,6 +1,6 @@
 # AI Whiteboard 视频生成 API 调用说明
 
-最后更新：2026-05-02
+发布配置核对：2026-10-12。新环境请先读 [ENVIRONMENT_SETUP.md](./ENVIRONMENT_SETUP.md)。
 
 本文档给 AI 或外部服务阅读，用来调用 AI Whiteboard 的白板讲解视频生成接口。以后只要视频生成 API 的路径、请求字段、返回格式、依赖条件或行为发生变化，必须同步更新本文档。
 
@@ -10,7 +10,7 @@
 POST /api/video/render
 ```
 
-当前生产服务地址（Railway，已验证）：
+历史生产服务地址（Railway；不保证持续在线，请优先配置自己的服务地址）：
 
 ```text
 https://ai-whiteboard-production-94ad.up.railway.app
@@ -61,7 +61,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
   "imageDataUrl": "data:image/png;base64,...",
   "mode": "detailed",
   "ttsEnabled": true,
-  "playbackSpeed": 1
+  "playbackSpeed": 1,
+  "boardTheme": "light"
 }
 ```
 
@@ -70,8 +71,9 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 - `text`：可选。用户的文字问题、讲解要求或补充说明。
 - `imageDataUrl`：可选。题目图片，格式为 `data:image/png;base64,...`、`data:image/jpeg;base64,...`、`data:image/webp;base64,...` 或 `data:image/gif;base64,...`。
 - `mode`：可选，`"detailed"` 或 `"concise"`，默认 `"detailed"`。
-- `ttsEnabled`：可选，默认 `true`。设为 `true` 时会生成有声视频，要求后端已配置 Azure TTS。
+- `ttsEnabled`：可选，默认 `true`。设为 `true` 时会生成有声视频，要求后端已配置 Gemini TTS。
 - `playbackSpeed`：可选，范围 `0.5` 到 `2`，默认 `1`。
+- `boardTheme`：可选，`"light"` 或 `"dark"`，默认 `"light"`。设为 `"dark"` 时生成黑色白板：服务端会把画布背景改为黑色，并反转/修正文字、公式、线条、坐标轴、几何图和标注颜色以适配黑底。
 
 要求：
 
@@ -89,7 +91,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
     "canvas": {
       "width": 1200,
       "height": 800,
-      "background": "#ffffff"
+      "background": "#ffffff",
+      "theme": "light"
     },
     "commands": [
       {
@@ -105,7 +108,8 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
     ]
   },
   "ttsEnabled": true,
-  "playbackSpeed": 1
+  "playbackSpeed": 1,
+  "boardTheme": "dark"
 }
 ```
 
@@ -124,6 +128,7 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 - `scriptText`：可选。白板脚本 JSON 字符串。
 - `ttsEnabled`：可选，默认 `true`。如果脚本包含 `narration` 且希望输出有声视频，设为 `true`。
 - `playbackSpeed`：可选，范围 `0.5` 到 `2`，默认 `1`。
+- `boardTheme`：可选，`"light"` 或 `"dark"`，默认 `"light"`。即使传入的是白底脚本，`"dark"` 也会在渲染前生成黑底反色版本；原脚本文本不会被持久改写。
 
 要求：
 
@@ -143,9 +148,113 @@ Content-Disposition: attachment; filename="whiteboard-lecture.mp4"
 
 注意：这是网页客户端的体验优化，不改变 `/api/video/render` 的 HTTP 协议。外部 AI 或服务端调用该接口时，仍然是一次请求返回一个 MP4。
 
+## 插图增强测试版
+
+插图增强不调用任何生图 API，也不要求 OpenAI 或其他图片 API Key。它只接收已经准备好的本地图片或图片 data URL，把图片作为独立“视觉讲解页”插入现有白板脚本，再交给原 `/api/video/render` 渲染。
+
+### 分析适合插图的位置
+
+```http
+POST /api/ai-script/illustration-slots
+```
+
+请求：
+
+```json
+{
+  "scriptText": "{...}",
+  "maxSlots": 6
+}
+```
+
+返回：
+
+```json
+{
+  "suggestions": [
+    {
+      "pageId": "p2",
+      "title": "混凝土里面有什么",
+      "score": 0.92,
+      "reason": "包含具体结构或内部组成，插图能降低理解成本。",
+      "keywords": ["内部", "骨料", "水泥浆"]
+    }
+  ]
+}
+```
+
+### 应用已准备好的插图
+
+```http
+POST /api/ai-script/apply-illustrations
+```
+
+请求：
+
+```json
+{
+  "scriptText": "{...}",
+  "illustrations": [
+    {
+      "id": "concrete_cross_section",
+      "title": "混凝土内部结构",
+      "caption": "骨料像骨架，水泥浆像胶水，把石粒黏成坚硬整体。",
+      "narration": "先看这张剖面图，混凝土不是一整块均匀的灰色材料，里面有许多骨料，水泥浆把它们黏在一起。",
+      "pageId": "p2",
+      "keywords": ["内部", "骨料", "水泥浆"],
+      "dataUrl": "data:image/png;base64,..."
+    }
+  ]
+}
+```
+
+返回增强后的 `scriptText`、预检 `report`、已插入清单 `inserted` 和跳过清单 `skipped`。
+
+本地 Codex 工作流也可以用命令行把图片文件写入脚本：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --assets /tmp/job/illustrations.json \
+  --out /tmp/job/script_illustrated.json
+```
+
+如果用户只是给了插图文件，也可以不写 manifest，直接传图片路径：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --image /tmp/job/assets/concrete_cross_section.png \
+  --image /tmp/job/assets/mixer_truck.jpg \
+  --out /tmp/job/script_illustrated.json
+```
+
+需要显式指定标题、说明、关键词或目标页面时，使用 `--asset`，格式为 `路径|标题|说明|关键词1,关键词2|pageId`：
+
+```bash
+npm run illustrate:script -- \
+  --script /tmp/job/script.json \
+  --asset "/tmp/job/assets/dam.png|水库大坝|混凝土大坝靠自身重量抵抗水压|水库,大坝,水压|p8" \
+  --out /tmp/job/script_illustrated.json
+```
+
+其中 `illustrations.json` 可以使用图片文件路径，脚本会自动转成 data URL：
+
+```json
+[
+  {
+    "id": "mixer_truck",
+    "title": "搅拌车运输新拌混凝土",
+    "caption": "圆筒慢慢转动，帮助新拌混凝土暂时保持柔软。",
+    "path": "/tmp/job/assets/mixer_truck.png",
+    "keywords": ["搅拌车", "运输", "凝固"]
+  }
+]
+```
+
 ## TTS 中断重试
 
-当 `ttsEnabled: true` 时，视频生成会先为脚本中的 `narration` 生成语音。为了应对 Azure TTS 限流或临时网络波动，生成单条旁白时带有自动重试机制：
+当 `ttsEnabled: true` 时，视频生成会先为脚本中的 `narration` 生成语音。为了应对 Gemini TTS 限流或临时网络波动，生成单条旁白时带有自动重试机制：
 
 - 重试对象：单条旁白语音，而不是整段视频。
 - 默认最多尝试 6 次。
@@ -242,9 +351,9 @@ await fs.promises.writeFile("whiteboard-lecture.mp4", mp4);
 - `499`：调用方取消请求。
 - `500`：AI 生成失败、TTS 失败、headless Chrome 启动失败、ffmpeg 转码失败等。
 
-如果错误来自 TTS 临时中断，接口通常已经在内部重试过；最终仍返回 `500` 时，表示对应旁白在多次重试后仍未成功，或遇到了不可重试错误，例如 Azure TTS 未配置、鉴权失败、请求格式错误等。
+如果错误来自 TTS 临时中断，接口通常已经在内部重试过；最终仍返回 `500` 时，表示对应旁白在多次重试后仍未成功，或遇到了不可重试错误，例如 Gemini TTS 未配置、鉴权失败、请求格式错误等。
 
-如果 `ttsEnabled: true`，但服务端没有配置 Azure TTS，生成有声视频会失败。调用方可以改传：
+如果 `ttsEnabled: true`，但服务端没有配置 Gemini TTS，生成有声视频会失败。调用方可以改传：
 
 ```json
 {
@@ -259,7 +368,7 @@ await fs.promises.writeFile("whiteboard-lecture.mp4", mp4);
 视频 API 依赖以下能力：
 
 - Perplexity API：用于文字/图片输入时生成白板脚本。
-- Azure TTS：用于有声视频。
+- Gemini TTS：用于有声视频。
 - Chrome 或 Chromium：用于服务端 headless 渲染白板页面。
 - ffmpeg：用于把录制得到的 WebM 转成 MP4。
 
@@ -272,9 +381,8 @@ PERPLEXITY_REPAIR_MODEL=openai/gpt-5.2
 PERPLEXITY_VISION_MODEL=openai/gpt-5.4
 PERPLEXITY_MAX_REPAIR_ROUNDS=3
 
-AZURE_SPEECH_KEY=
-AZURE_SPEECH_REGION=
-AZURE_SPEECH_VOICE=zh-CN-XiaoxiaoNeural
+GEMINI_API_KEY=
+GEMINI_TTS_VOICE=Sulafat
 
 CHROME_EXECUTABLE_PATH=/path/to/chrome-or-chromium
 ```
@@ -331,3 +439,20 @@ CHROME_EXECUTABLE_PATH=/usr/bin/chromium
 - 只要 `/api/video/render` 的路径、请求字段、默认值、返回格式、错误语义、依赖环境变量发生变化，必须更新本文档。
 - 如果 AI Whiteboard 脚本 schema 变化，应同步检查本文档里的脚本示例是否仍然有效。
 - 如果新增贴原图、字幕样式、分辨率、视频码率、异步任务队列等能力，应在本文档增加字段说明和示例。
+
+
+## Gemini 老师配音（2026-09-29）
+
+编辑器、单课/分组分享播放器、预生成和 MP4 导出都使用 `POST /api/tts`。
+默认模型固定为 `gemini-3.8-flash-tts`，默认音色为 `Sulafat`，中文和英文共用同一音色。服务端只需要 `GEMINI_API_KEY`；可选 `GEMINI_TTS_VOICE` 为 Gemini 预设音色。旧 Azure 变量不再参与配音，也不会失败后悄悄回退到旧声音。
+
+请求示例：`{"text":"注意，beach，中间的长音拉开一点。轮到你啦！","rate":1}`。
+响应是 24 kHz WAV 音频，`Content-Type: audio/wav`。诊断响应头包含 `X-TTS-Provider`、`X-TTS-Model`、`X-TTS-Voice`、`X-TTS-Style` 和 `X-TTS-Cache`。
+
+服务端将表演指令放在 `speech_metadata.style` 中，正文只保留朗读内容：问句启发、概念对比和重点强调、英文示范稍慢、结尾鼓励。普通解释保持平稳，避免句句重读或夸张表演。旧脚本无需修改。AI 生成新脚本时会优先保留完整短句，不把中英文解释切碎，不朗读舞台提示。
+
+`rate` 在合成时是近似语速提示（0.5–2），不是精确秒数；播放器原有播放速度仍决定实际播放和画面节奏。视频按真实音频时长等待，不能按预估字数截断。
+
+每次上游调用超时为 120 秒，页面离开/请求断开会取消该次调用；仅成功 WAV 进入进程内 64 MiB LRU 缓存，缓存区分模型、密钥、音色、语速及完整风格提示。重启会清空缓存。免费额度不足会明确报错，需在 AI Studio 检查配额；不会自动开通计费。
+
+已经导出的 MP4 不会自动重新配音；重新生成/导出后使用 Gemini。

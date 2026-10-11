@@ -33,6 +33,7 @@ type CachedAudio = {
 
 const SILENT_AUDIO_DATA_URI =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==";
+const STANDARD_TTS_RATE = 1;
 
 function getNarrationFromCommand(cmd: WhiteboardCommand) {
   return "narration" in cmd && typeof cmd.narration === "string"
@@ -174,7 +175,7 @@ export default function SharedPlayerPage() {
     const response = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, speed: playbackSpeed }),
+      body: JSON.stringify({ text, rate: STANDARD_TTS_RATE }),
     });
     if (!response.ok) {
       const body = await response.json().catch(() => null);

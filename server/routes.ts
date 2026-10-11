@@ -16,13 +16,21 @@ import {
   summarizeScriptKnowledge,
 } from "./aiScript";
 import { renderScriptToWebmInHeadlessBrowser } from "./videoRender";
-import type {
-  WhiteboardCommand,
-  WhiteboardScript,
-} from "../client/src/whiteboard/commandTypes";
+import {
+  enhanceScriptWithIllustrations,
+  suggestIllustrationSlots,
+} from "./illustratedScript";
+import type { WhiteboardScript } from "../client/src/whiteboard/commandTypes";
+import {
+  applyBoardTheme,
+  normalizeBoardTheme,
+} from "../client/src/whiteboard/theme";
+import {
+  applyCanvasAspect,
+  normalizeCanvasAspect,
+} from "../client/src/whiteboard/canvasAspect";
 
-const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
-const DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
+import { synthesizeTeacherNarration, GEMINI_TTS_MODEL, TEACHER_STYLE_VERSION, TtsError } from "./geminiTts";
 const MAX_IMAGE_DATA_URL_LENGTH = 14 * 1024 * 1024;
 const IMAGE_DATA_URL_PATTERN = /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/;
 const MAX_VIDEO_UPLOAD_BYTES = 500 * 1024 * 1024;
@@ -44,15 +52,6 @@ const videoRenderJobs = new Map<
     timeout: NodeJS.Timeout;
   }
 >();
-
-function escapeSsml(text: string) {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
 
 function clampRate(rate: unknown) {
   if (typeof rate !== "number" || !Number.isFinite(rate)) return 1;
@@ -322,69 +321,6 @@ function getDescendantGroupIds(
     }
   }
   return ids;
-}
-
-function getCommandNarration(command: WhiteboardCommand) {
-  return "narration" in command && typeof command.narration === "string"
-    ? command.narration.trim()
-    : "";
-}
-
-function estimateTtsDurationMs(text: string) {
-  const chars = Array.from(text.trim());
-  if (chars.length === 0) return 0;
-
-  let cjk = 0;
-  let latin = 0;
-  let punctuation = 0;
-  for (const char of chars) {
-    const codePoint = char.codePointAt(0) ?? 0;
-    if (
-      (codePoint >= 0x3400 && codePoint <= 0x9fff) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff)
-    ) {
-      cjk += 1;
-    }
-    else if (/[A-Za-z0-9]/.test(char)) latin += 1;
-    else if (!/\s/.test(char)) punctuation += 1;
-  }
-
-  const baseMs = cjk * 260 + latin * 85 + punctuation * 180;
-  return Math.max(1200, Math.round(baseMs + 600));
-}
-
-function findTtsDurationMismatches(script: WhiteboardScript) {
-  return script.commands.flatMap((command, index) => {
-    const narration = getCommandNarration(command);
-    if (!narration || !("duration" in command) || typeof command.duration !== "number") {
-      return [];
-    }
-
-    const estimatedMs = estimateTtsDurationMs(narration);
-    if (estimatedMs <= 0) return [];
-
-    const scriptMs = command.duration;
-    const ratio = scriptMs / estimatedMs;
-    const absoluteDelta = Math.abs(scriptMs - estimatedMs);
-    const isClearlyTooLong = scriptMs > 6000 && ratio >= 4 && absoluteDelta >= 6000;
-    const isClearlyTooShort = estimatedMs > 6000 && ratio <= 0.25 && absoluteDelta >= 6000;
-    if (!isClearlyTooLong && !isClearlyTooShort) return [];
-
-    return [
-      {
-        commandIndex: index,
-        commandId: "id" in command && typeof command.id === "string" ? command.id : undefined,
-        commandType: command.type,
-        durationMs: Math.round(scriptMs),
-        estimatedTtsMs: estimatedMs,
-        narrationPreview:
-          narration.length > 40 ? `${narration.slice(0, 40)}...` : narration,
-        message: `第 ${index + 1} 条命令 (${command.type}) 的 duration=${Math.round(
-          scriptMs,
-        )}ms，与旁白估算时长约 ${estimatedMs}ms 差距过大。`,
-      },
-    ];
-  });
 }
 
 function composePromptFromRecognizedImage(params: {
@@ -749,66 +685,25 @@ export async function registerRoutes(
   });
 
   app.post("/api/tts", async (req, res, next) => {
+    const controller = createRequestAbortController(req, res);
     try {
-      const key = process.env.AZURE_SPEECH_KEY;
-      const region = process.env.AZURE_SPEECH_REGION;
-
-      if (!key || !region) {
-        return res.status(501).json({
-          message:
-            "Azure TTS 未配置。请设置 AZURE_SPEECH_KEY 和 AZURE_SPEECH_REGION。",
-        });
-      }
-
-      const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-      if (!text) {
-        return res.status(400).json({ message: "text 不能为空。" });
-      }
-      if (text.length > 1200) {
-        return res.status(400).json({ message: "text 不能超过 1200 个字符。" });
-      }
-
-      const voice =
-        typeof req.body?.voice === "string" && req.body.voice.trim()
-          ? req.body.voice.trim()
-          : process.env.AZURE_SPEECH_VOICE || DEFAULT_VOICE;
-      const rate = clampRate(req.body?.rate);
-      const ratePercent = Math.round((rate - 1) * 100);
-      const rateValue = ratePercent === 0 ? "default" : `${ratePercent}%`;
-      const ssml = `<?xml version="1.0" encoding="utf-8"?>
-<speak version="1.0" xml:lang="zh-CN" xmlns="http://www.w3.org/2001/10/synthesis">
-  <voice name="${escapeSsml(voice)}">
-    <prosody rate="${rateValue}">${escapeSsml(text)}</prosody>
-  </voice>
-</speak>`;
-
-      const azureResponse = await fetch(
-        `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
-        {
-          method: "POST",
-          headers: {
-            "Ocp-Apim-Subscription-Key": key,
-            "Content-Type": "application/ssml+xml",
-            "X-Microsoft-OutputFormat": DEFAULT_OUTPUT_FORMAT,
-            "User-Agent": "ai-whiteboard",
-          },
-          body: ssml,
-        },
-      );
-
-      if (!azureResponse.ok) {
-        const body = await azureResponse.text();
-        return res.status(azureResponse.status).json({
-          message: `Azure TTS 调用失败：${body || azureResponse.statusText}`,
-        });
-      }
-
-      const audio = Buffer.from(await azureResponse.arrayBuffer());
-      res.setHeader("Content-Type", "audio/mpeg");
+      const result = await synthesizeTeacherNarration(req.body ?? {}, {
+        apiKey: process.env.GEMINI_API_KEY,
+        voice: process.env.GEMINI_TTS_VOICE,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Cache-Control", "no-store");
-      res.setHeader("X-Azure-Voice", voice);
-      return res.send(audio);
+      res.setHeader("X-TTS-Provider", "gemini");
+      res.setHeader("X-TTS-Model", GEMINI_TTS_MODEL);
+      res.setHeader("X-TTS-Voice", result.voice);
+      res.setHeader("X-TTS-Style", TEACHER_STYLE_VERSION);
+      res.setHeader("X-TTS-Cache", result.cached ? "hit" : "miss");
+      return res.send(result.audio);
     } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof TtsError) return res.status(error.status).json({ message: error.message });
       return next(error);
     }
   });
@@ -887,6 +782,8 @@ export async function registerRoutes(
     const job = createVideoRenderJob();
     try {
       const mode = parseExplanationMode(req.body?.mode);
+      const boardTheme = normalizeBoardTheme(req.body?.boardTheme);
+      const canvasAspect = normalizeCanvasAspect(req.body?.canvasAspect);
       const ttsEnabled = req.body?.ttsEnabled !== false;
       const playbackSpeed =
         typeof req.body?.playbackSpeed === "number" && Number.isFinite(req.body.playbackSpeed)
@@ -927,7 +824,10 @@ export async function registerRoutes(
             mode,
           });
         }
-        const generated = await generateAiScript(prompt, mode, controller.signal);
+        const generated = await generateAiScript(prompt, mode, controller.signal, {
+          boardTheme,
+          canvasAspect,
+        });
         scriptText = generated.scriptText;
       }
 
@@ -938,17 +838,18 @@ export async function registerRoutes(
           report: renderPreflight.report,
         });
       }
-      if (ttsEnabled) {
-        const durationMismatches = findTtsDurationMismatches(renderPreflight.script);
-        if (durationMismatches.length > 0) {
-          return res.status(400).json({
-            message:
-              "脚本中部分命令的 duration 与旁白预计时长差距过大。请修改脚本 duration 或拆分旁白后重试。",
-            issues: durationMismatches,
-          });
-        }
+      const renderScript = applyCanvasAspect(
+        applyBoardTheme(renderPreflight.script, boardTheme),
+        canvasAspect,
+      );
+      const finalPreflight = preflightScriptText(JSON.stringify(renderScript));
+      if (!finalPreflight.report.ok || !finalPreflight.script) {
+        return res.status(400).json({
+          message: "画面比例转换后的脚本预检未通过，请修正布局后再生成视频。",
+          report: finalPreflight.report,
+        });
       }
-      scriptText = JSON.stringify(renderPreflight.script);
+      scriptText = JSON.stringify(finalPreflight.script);
 
       const baseUrl = getBaseUrl(req);
       await renderScriptToWebmInHeadlessBrowser({
@@ -989,6 +890,70 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/ai-script/illustration-slots", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "scriptText 不能为空。" });
+      }
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法分析插图位置。",
+          report: preflight.report,
+        });
+      }
+      const maxSlots =
+        typeof req.body?.maxSlots === "number" && Number.isFinite(req.body.maxSlots)
+          ? Math.max(0, Math.min(8, Math.round(req.body.maxSlots)))
+          : 6;
+      return res.json({
+        suggestions: suggestIllustrationSlots(preflight.script, maxSlots),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post("/api/ai-script/apply-illustrations", async (req, res, next) => {
+    try {
+      const scriptText = stringifyScriptInput(req.body?.scriptText ?? req.body?.script);
+      if (!scriptText.trim()) {
+        return res.status(400).json({ message: "scriptText 不能为空。" });
+      }
+      const preflight = preflightScriptText(scriptText);
+      if (!preflight.report.ok || !preflight.script) {
+        return res.status(400).json({
+          message: "脚本预检未通过，暂时无法插入插图。",
+          report: preflight.report,
+        });
+      }
+      const enhanced = enhanceScriptWithIllustrations(
+        preflight.script,
+        Array.isArray(req.body?.illustrations) ? req.body.illustrations : [],
+      );
+      const enhancedPreflight = preflightScriptText(enhanced.scriptText);
+      if (!enhancedPreflight.report.ok || !enhancedPreflight.script) {
+        return res.status(400).json({
+          message: "插图增强后的脚本预检未通过。",
+          report: enhancedPreflight.report,
+          inserted: enhanced.inserted,
+          skipped: enhanced.skipped,
+        });
+      }
+      return res.json({
+        script: enhancedPreflight.script,
+        scriptText: JSON.stringify(enhancedPreflight.script),
+        report: enhancedPreflight.report,
+        suggestions: enhanced.suggestions,
+        inserted: enhanced.inserted,
+        skipped: enhanced.skipped,
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
   app.post("/api/ai-script/generate", async (req, res, next) => {
     const controller = createRequestAbortController(req, res);
     try {
@@ -1013,6 +978,8 @@ export async function registerRoutes(
         }
       }
       const imageAnchors = Array.isArray(req.body?.imageAnchors) ? req.body.imageAnchors : undefined;
+      const boardTheme = normalizeBoardTheme(req.body?.boardTheme);
+      const canvasAspect = normalizeCanvasAspect(req.body?.canvasAspect);
       const sourceImageSizeRaw =
         req.body?.sourceImageSize && typeof req.body.sourceImageSize === "object"
           ? (req.body.sourceImageSize as Record<string, unknown>)
@@ -1026,6 +993,8 @@ export async function registerRoutes(
           sourceImageDataUrl: sourceImageDataUrl || undefined,
           imageAnchors,
           sourceImageSize,
+          boardTheme,
+          canvasAspect,
         }),
       );
     } catch (error) {

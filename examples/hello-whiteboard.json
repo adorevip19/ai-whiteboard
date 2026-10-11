@@ -1,0 +1,99 @@
+{
+  "canvas": {
+    "width": 1200,
+    "height": 800,
+    "background": "#ffffff"
+  },
+  "pages": [
+    {
+      "id": "main",
+      "title": "白板视频入门"
+    }
+  ],
+  "commands": [
+    {
+      "type": "switch_page",
+      "id": "page-main",
+      "pageId": "main",
+      "duration": 200
+    },
+    {
+      "type": "write_text",
+      "id": "title",
+      "text": "你好，AI 白板！",
+      "x": 100,
+      "y": 150,
+      "fontSize": 52,
+      "color": "#111111",
+      "duration": 1200,
+      "narration": "你好，我们来制作一个白板讲解视频。"
+    },
+    {
+      "type": "draw_line",
+      "id": "title-line",
+      "from": [
+        100,
+        190
+      ],
+      "to": [
+        760,
+        190
+      ],
+      "color": "#2563eb",
+      "width": 3,
+      "duration": 1800
+    },
+    {
+      "type": "write_text",
+      "id": "example",
+      "text": "2 + 3 = 5",
+      "x": 100,
+      "y": 300,
+      "fontSize": 64,
+      "color": "#2563eb",
+      "duration": 1600,
+      "narration": "二加三等于五。"
+    },
+    {
+      "type": "draw_line",
+      "id": "example-line",
+      "from": [
+        100,
+        350
+      ],
+      "to": [
+        760,
+        350
+      ],
+      "color": "#2563eb",
+      "width": 3,
+      "duration": 1800
+    },
+    {
+      "type": "write_text",
+      "id": "finish",
+      "text": "JSON 脚本 → 白板动画 → MP4",
+      "x": 100,
+      "y": 470,
+      "fontSize": 36,
+      "color": "#111111",
+      "duration": 2200,
+      "narration": "智能体编写脚本，项目渲染动画，最后导出视频。"
+    },
+    {
+      "type": "draw_line",
+      "id": "finish-line",
+      "from": [
+        100,
+        520
+      ],
+      "to": [
+        760,
+        520
+      ],
+      "color": "#2563eb",
+      "width": 3,
+      "duration": 1800
+    }
+  ]
+}

@@ -6,6 +6,17 @@ AI Whiteboard is an MIT-licensed open-source tool for generating structured whit
 
 在线 Demo / Live demo: https://ai-whiteboard-production-94ad.up.railway.app
 
+## 从零配置与智能体使用
+
+先读 [环境配置与视频制作指南](./ENVIRONMENT_SETUP.md)：包含 macOS/Linux 安装、API 密钥、服务启动、无密钥 MP4 示例、其他智能体调用流程和常见报错。
+
+- JSON 命令规范：[AI_GUIDE.md](./AI_GUIDE.md)
+- 视频生成接口：[VIDEO_API.md](./VIDEO_API.md)
+- 可运行示例：[examples/hello-whiteboard.json](./examples/hello-whiteboard.json)
+- 可选互动课堂：[INTERACTIVE_LESSONS.md](./INTERACTIVE_LESSONS.md)
+
+智能体可以自行编写 JSON 并调用项目渲染视频。无声导出无需密钥；有声导出需自备 Gemini API 密钥；应用内自动识图和生成脚本需另配 Perplexity。公开源码不附带私有密钥、课程媒体或学生数据。历史 Demo 地址可能变更，优先使用自己启动的服务。
+
 ## 开源状态
 
 本项目目前处于活跃维护阶段，重点价值不是夸大使用量或下载量，而是提供一个可自部署、可复用、可扩展的教育视频生成基础设施。当前仓库公开可访问，生产 Demo 已部署到 Railway，文档包含 AI 调用规范、视频生成 API、渲染依赖和部署说明。
@@ -20,7 +31,7 @@ AI Whiteboard is an MIT-licensed open-source tool for generating structured whit
 - **erase_object / erase_area / clear_canvas** — 删除对象、局部擦除或清空整张画布
 - **annotate_underline / annotate_circle / clear_annotations** — 在独立批注图层划重点，并可一键清除
 - **wait** — 在关键节点暂停，等待用户点击“下一步”后继续
-- **Azure TTS** — 可用 Microsoft Azure Speech 朗读 `narration` 旁白；每段旁白和对应白板动作同时开始，下一段会等二者都完成后再继续
+- **Gemini TTS** — 可用 Gemini 3.8 Flash TTS 朗读 `narration` 旁白；每段旁白和对应白板动作同时开始，下一段会等二者都完成后再继续
 - **黑色白板** — 生成或导出时可选择黑底版本，服务端会把画布背景设为黑色，并把文字、公式、线条、坐标轴、几何图和标注颜色反转/修正为黑底可读
 - 顺序执行 commands 数组，实时显示当前步骤
 - JSON 格式错误、未知命令、缺字段都有明确提示
@@ -38,8 +49,9 @@ AI Whiteboard is an MIT-licensed open-source tool for generating structured whit
 ## 本地开发
 
 ```bash
-npm install
-npm run dev          # 开发服务器（Express + Vite）
+npm ci
+cp .env.example .env
+PORT=5001 npm run dev          # 开发服务器（Express + Vite）
 npm run build        # 构建前端和生产服务端到 dist/
 npm run start        # 启动生产服务，默认监听 5000 或 Railway 的 PORT
 npm run build:client # 仅构建前端到 dist/public
@@ -69,17 +81,16 @@ Railway 会执行：
 3. 等待 Build / Deploy 完成
 4. 在 **Settings → Networking → Generate Domain** 生成公开 URL
 
-不需要配置环境变量。项目根目录的 `railway.json` 会覆盖 Railway Dashboard 中的 Build Command / Start Command。
+无声白板不需要配置环境变量。项目根目录的 `railway.json` 会覆盖 Railway Dashboard 中的 Build Command / Start Command。
 
-如需启用 Azure 语音合成，请在 Railway Variables 中设置：
+如需启用 Gemini 语音合成，请在 Railway Variables 中设置：
 
 ```text
-AZURE_SPEECH_KEY=你的 Azure Speech Key
-AZURE_SPEECH_REGION=你的 Azure Speech Region
-AZURE_SPEECH_VOICE=zh-CN-XiaoxiaoNeural
+GEMINI_API_KEY=你的 Gemini API Key
+GEMINI_TTS_VOICE=Sulafat
 ```
 
-`AZURE_SPEECH_VOICE` 可选；不设置时默认使用 `zh-CN-XiaoxiaoNeural`。未配置 Key/Region 时，白板仍可正常播放，只是 Azure TTS 开关会提示未配置。
+`GEMINI_TTS_VOICE` 可选；不设置时默认使用 `Sulafat`。未配置 Key 时，白板仍可正常播放，只是 Gemini TTS 开关会提示未配置。
 
 ## 项目结构
 
@@ -97,7 +108,10 @@ client/src/
 server/
 ├── index.ts                           # Express 入口
 ├── static.ts                          # 生产环境静态文件托管
-└── routes.ts                          # API 路由占位
+├── routes.ts                          # 脚本、配音、分享与视频导出 API
+├── geminiTts.ts                        # Gemini 教师配音
+├── videoRender.ts                      # Headless Chrome 渲染
+└── interactive/                        # 可选互动课堂与评分
 
 script/
 └── build.ts                           # 前端 + 服务端生产构建

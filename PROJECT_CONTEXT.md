@@ -1,3 +1,7 @@
+# 当前配音配置（2026-09-29）
+
+全部在线配音入口已统一为 Gemini 3.8 Flash TTS，默认 Sulafat 老师音色；需要 GEMINI_API_KEY，可选 GEMINI_TTS_VOICE。实现见 server/geminiTts.ts，当前接口见 VIDEO_API.md。以下历史记录中的 Azure 配置及 audio/mpeg 响应描述已被这次迁移替代。已导出的视频文件需重新导出才会换声音。
+
 # AI Whiteboard 项目上下文
 
 最后更新：2026-05-06
